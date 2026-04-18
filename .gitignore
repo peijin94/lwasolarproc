@@ -1,0 +1,29 @@
+# Python bytecode and runtime caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Test and type-check caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Build and packaging outputs
+build/
+dist/
+*.egg-info/
+
+# Virtual environments and local env files
+.venv/
+venv/
+env/
+.env
+.env.*
+
+# Local notebooks and editor state
+.ipynb_checkpoints/
+.vscode/
+.idea/
+
