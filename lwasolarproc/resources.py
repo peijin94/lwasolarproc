@@ -1,14 +1,15 @@
-"""Resource path helpers for packaged lwasolarproc data files."""
+"""Resource path helpers for bundled lwasolarproc data files."""
 
 from __future__ import annotations
 
-from importlib.resources import files
 from pathlib import Path
+
+PACKAGE_DIR = Path(__file__).resolve().parent
 
 
 def resource_path(relative_path: str) -> Path:
-    """Return the filesystem path for a packaged resource."""
-    return Path(files("lwasolarproc").joinpath(relative_path))
+    """Return the filesystem path for a bundled resource."""
+    return PACKAGE_DIR / relative_path
 
 
 def aoflagger_strategy_path() -> Path:

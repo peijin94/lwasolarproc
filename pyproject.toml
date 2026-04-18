@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lwasolarproc"
+version = "0.1.0"
+description = "OVRO-LWA solar preprocessing, imaging, FITS, and visualization utilities"
+readme = "README.MD"
+requires-python = ">=3.10"
+dependencies = [
+    "astropy",
+    "h5py",
+    "matplotlib",
+    "mpl-animators>=1.2.0",
+    "numpy",
+    "reproject>=0.13.0",
+    "scipy",
+    "sunpy",
+]
+
+[project.optional-dependencies]
+ms = ["python-casacore"]
+
+[project.scripts]
+lwasolarproc-fullband = "lwasolarproc.preprocessing_and_imaging:main"
+
+[tool.setuptools.packages.find]
+include = ["lwasolarproc*"]
+
+[tool.setuptools.package-data]
+lwasolarproc = [
+    "LWA_sun_PZ.lua",
+    "settings_mat_file/*.mat",
+]

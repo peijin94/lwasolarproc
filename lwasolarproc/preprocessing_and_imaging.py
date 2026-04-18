@@ -20,6 +20,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
@@ -36,13 +37,19 @@ except ImportError:  # pragma: no cover - supports direct script execution.
 
 
 PACKAGE_DIR = Path(__file__).resolve().parent
-ROOT = PACKAGE_DIR.parent
-DEFAULT_WORK_DIR = ROOT / "tests" / "_lwasolarproc_fullband"
+PROJECT_ROOT = PACKAGE_DIR.parent
+WORKSPACE_ROOT = PROJECT_ROOT.parent
+ROOT = WORKSPACE_ROOT
+DEFAULT_WORK_DIR = WORKSPACE_ROOT / "tests" / "_lwasolarproc_fullband"
 DEFAULT_AOFLAGGER_STRATEGY = aoflagger_strategy_path()
-DEFAULT_SOURCES_JSON = ROOT / "TTCalX" / "sources.json"
+DEFAULT_SOURCES_JSON = WORKSPACE_ROOT / "TTCalX" / "sources.json"
 if not DEFAULT_SOURCES_JSON.exists():
-    DEFAULT_SOURCES_JSON = ROOT / "TTCal.jl" / "test" / "sources.json"
-DEFAULT_TTCALSUN_BIN = ROOT / "TTCalSun" / "bin" / "ttcalsun_cpu.sh"
+    DEFAULT_SOURCES_JSON = PROJECT_ROOT / "TTCalX" / "sources.json"
+if not DEFAULT_SOURCES_JSON.exists():
+    DEFAULT_SOURCES_JSON = WORKSPACE_ROOT / "TTCal.jl" / "test" / "sources.json"
+DEFAULT_TTCALSUN_BIN = WORKSPACE_ROOT / "TTCalSun" / "bin" / "ttcalsun_cpu.sh"
+if not DEFAULT_TTCALSUN_BIN.exists():
+    DEFAULT_TTCALSUN_BIN = PROJECT_ROOT / "TTCalSun" / "bin" / "ttcalsun_cpu.sh"
 DEFAULT_DP3_BIN = "/opt/dp3-6.5.1/bin/DP3"
 DEFAULT_CASARC = Path.home() / ".casarc"
 
@@ -115,14 +122,22 @@ def run_command(
     env = os.environ.copy()
     if extra_env:
         env.update(extra_env)
-    return subprocess.run(
-        list(cmd),
-        cwd=str(cwd) if cwd else None,
-        env=env,
-        text=True,
-        capture_output=capture,
-        check=True,
-    )
+    try:
+        return subprocess.run(
+            list(cmd),
+            cwd=str(cwd) if cwd else None,
+            env=env,
+            text=True,
+            capture_output=capture,
+            check=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        if capture:
+            if exc.stdout:
+                print(exc.stdout, end="")
+            if exc.stderr:
+                print(exc.stderr, end="", file=sys.stderr)
+        raise
 
 
 def extract_freq_mhz(path: str | Path) -> int:
