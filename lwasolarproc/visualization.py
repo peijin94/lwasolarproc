@@ -6,11 +6,14 @@ avoiding the CASA and suncasa runtime dependencies.
 
 from __future__ import annotations
 
+import base64
+import io
 import os
 from pathlib import Path
 from typing import Sequence
 
 import matplotlib.colors as mcolors
+import matplotlib.image as mpimg
 import matplotlib.pyplot as plt
 import numpy as np
 from astropy import units as u
@@ -18,11 +21,18 @@ from astropy.coordinates import AltAz, EarthLocation, SkyCoord, get_sun
 from astropy.io import fits
 from astropy.time import Time
 from matplotlib import gridspec
-from matplotlib.patches import Ellipse
+from matplotlib.patches import Circle, Ellipse
 from sunpy import map as smap
+
+try:  # Registers SunPy colormaps such as ``hinodexrt`` with Matplotlib.
+    import sunpy.visualization.colormaps  # noqa: F401
+except Exception:  # pragma: no cover - plotting still works with fallback cmap.
+    pass
 
 
 OVRO_LWA_LOCATION = EarthLocation(lat=37.23977727 * u.deg, lon=-118.2816667 * u.deg, height=1183 * u.m)
+NJIT_LOGO_STR = "iVBORw0KGgoAAAANSUhEUgAAAHgAAAA3CAMAAADwtH5ZAAAAVFBMVEVHcEzuNCTuNCTuNCTuNCTuNCTuNCTuNCTuNCTuNCTuNCTuNCTuNCTuNCTuNCTuNCTuNCTuNCTuNCTuNCTuNCTuNCTuNCTuNCTuNCTuNCTuNCTuNCQLSl2nAAAAG3RSTlMA2xyijg4I9TgExewsRlFwFPqvz7x7IuVcZJtcMgeUAAADGklEQVRYw+XY2ZKzKhAAYJRFFgUFFJT3f8/TGJPRaP6aVGXIxemam8HlSwNiI0L/z5i7w78t5/DH2b6NQUObW3t02Xw4GfVGQ/M+eMfPrrBhL4uOBKV8PNyLRmgMSpr6CEesQlA20kNz16RG5Qhw8BYDFhdwqg6/h9nU6OezmE8pzaeLpyql5jkbMzhvMV7skJJbMMY+pOUqYzh8uHZMoT2dhlMaulMrlSmF6alxIb2AyJknkgU2YXINJ7eXzAu4uYar+umG4/To8rSBfDzDaycm2R7g6RLmv4IRRSeY1pdwc5Tn873egtEZvgomBxJA9m1p2CetVc55Kg+jOfe23+RYBoZr4ak1O1kPVV8A7l1eGMT4I+vBlYMR+5HLwncZ7tIVg8224mTZ1nBBKXhEe7nnjaQF4Lq6w5uMdePpGy+JD8Cb7IZSMEFHOZWHkbitJO/AF68ytC1EMG7iJQxFxL48WGXPfgnDzEzqFRzTP2Gu0mESZ9mKX87qKVw239/rlylsr4gu35FwcZCv4VNdIjhZH8B4OsAYpXUubYKe6mma6r7vKWVM7OpHM8fZ6P0PE7O5LJDk87LCtIkQs1nHQNC65TqakWBrvZTVkOdpU93DSentQoxuX3e/uJxFL2com3gciZVVaFbsEMPQqFA5Jy1eCBkhTy7eqPphMMPFWLIaSCyrAwgUSNIDNJqoO95CV1OWC8/3Ax6N50KxbyOxlfohB1U5j4mJmcrSB7Y5UOTj3dQXPTfYPUwQJSZzx6fPaPv9VYMfM2tFm81UlV9gq1TTD4NbvrMbb/mKKRKp7qYlkdfs77aTbFzWecVaY7dnJHgw+z80tzShHykfvbo9mHbspr82HxvhmzpktBZlUCRas6rKEz2VQmEOaxxyqnhuabmvFIwTN6TGEV2XSxWSjVZltetLfpIR7ejSUFqF1/QSUrXosiqi2jbKxqnwd69+lo0bOSvM1sYFW7qLV9aR4skCK6UpPbL5E6T/Qh9DuWlxV7yPoVDFXxha2E0QwkV5tjak+wLL9PiFsUWoNZp+gUU81ugrQcU31P8AFQ9Mc+zu8kIAAAAASUVORK5CYII="
+CALTECH_LOGO = "iVBORw0KGgoAAAANSUhEUgAAALQAAABNCAMAAAA4jr7RAAAAS1BMVEVHcEz/bh7/bh7/bh7/bh7/bh7/bh7/bh7/bh7/bh7/bh7/bh7/bh7/bh7/bh7/bh7/bh7/bh7/bh7/bh7/bh7/bh7/bh7/bh7/bh5CVYR9AAAAGHRSTlMA2OBx/CBS9hhAtIcDyA7v5jQpYQimmEmEErTxAAAEtElEQVRo3u1Zi5KrKhAMoIAIIiDq/3/pBQZfiUnWbKr2VF26TtWuLGI7zPQ0ntutoKCgoKCgoKCgoKCgoKDgX8PATdMY272bx2nANMCFtPLqc+D+7guMpSUCacZ0r0b6ekHKqmpGHC6Iv0y6iffj+vec7djPK5iir5jQKszJpAkTH5AO9/e/J03RfIBuux+RJnq+TFp+h7QMz75D1Q7vSUsSHv9XkXZsoar1+it5T5qGydUfRdrkdEYtNaYhCq6wfUu6jfP+JtKdgOob0zLyxluIdvsj0n8UaVdBEm8PJ2nkqSj9A5HOgfZb4ck8RJcZtTHG1t0PIj1wa07ak0zD/J70UMdR+QHpJilHbw7BD6KHfBoamlFhHYDV2AwnkcY+oAGxJyJODe1p2msPdx71YRjl4Uy6c2k28nS4TDo9eR4PY/VIDMTFeraq4KxH/kg6/mF2cUNavLUnv5bx4NBuuF5IYyqqZWF/NVWGlAqMPmmU6ijfKYnuSc+JdC0OM1Heuq5l+2FlM2mGd6PiohHh6EXR5eTWSCGQxYo+kK5i7rgbF4vUA8lKpV2R7V3XCvwa9tDK3EXTkdio81edWNo9wztuoWtGe3QkrUKVhlwCcridgtKjTTIpy27GewTpQDbSGuVYzOJSWkvDXugWsOL7i+6etN8aVKUgJyBTUNg9Dumlpk5KThJDxDNpNhrObQs6YK+LZn7yI2mMez3ulQ7zc51Ov6Ll0RbnPU9TUyJnu8AEheYSfILcYsGaT0ifR7rjdZ3kdeANSeF7IA06DRElxy0KbzseqlyOPooePHIpPijLa6SNfpdTvHGjwDkPn0Q6rVKJcYGCVOrUsWC6Tafnpfbq/jppmxPtWb8MjWFX7NWTSE/V/AjMa3xiYiA99NLN0pyLpCEY2jzZB1HdEzmNtDvhPGtr9TFr9m3c/oK09PPJwtSl0Dd4NdpoHKvnOX1Kmhkg7V66vE9I38j8KNQh/IrUi2D1IhhtDinwJNJpiLXkCA651750eR+Rhkpk+3DI1BKQS6a1EgaqdHoR6cSjouftdpOmOlmuL5AG87FpbFwHItyOhxPMK50GduMmnDzdJcXxDNQy38hvkIZeHdvxyhleo7cp3dWw194npKEy9Bpq7vu2XnNvOV80IVv0WH+D9OCzMJB6SN9/srNrb34fJ9qfkwa1BI+B3QAeXKT06qA1zoykimmyUH2D9M0uhheH7uDV5tIgTsJ0AzfgEU5IV945YnKSMUGoIwLmxoMF+KgqDufPQe1X0iMkyPZ1aZVlbJYanbVSaPkwEj3sSprs/LTBD4oXzQW/M+Szqr9E+jahh242PZjharFjK2mjd4eA6Y61BkNk1MPZ4Euk96cq2E6T62lriCodQVh4GbrkyfZSbk3ZZYX1c6DdN9VU7d8iLQcq+mr9/uiWVtMRSHGtCOcKB5C4L+Fnctnhz5ox1qMJDrBKw+eIXji+sy8ChuMiycKn++vloB6XRebTb72u9UL4kTTdbSe4U2htzsS3CD61rnk8+cefMKUzzdSsnwE6Q2MnnOzRNA6Wroskn7vdH1nHq+H2OaQ8Mdby2grng/Ff+X+LgoKCgoKCgoKCgoKCgv8Z/gMgTqct1e1j7QAAAABJRU5ErkJggg=="
 
 
 def _header_get(header, key: str, default=None):
@@ -92,16 +102,99 @@ def _extent_from_fov(fov: float) -> list[float]:
     return [-half, half, -half, half]
 
 
-def _set_sunpy_map_fov(ax, solar_map, fov: float, x_shift: float = 0.0, y_shift: float = 0.0) -> None:
+def _set_solar_axes_fov(ax, fov: float, x_shift: float = 0.0, y_shift: float = 0.0) -> None:
     half = fov / 2.0
-    bottom_left = SkyCoord((-half - x_shift) * u.arcsec, (-half - y_shift) * u.arcsec, frame=solar_map.coordinate_frame)
-    top_right = SkyCoord((half - x_shift) * u.arcsec, (half - y_shift) * u.arcsec, frame=solar_map.coordinate_frame)
-    x0, y0 = solar_map.world_to_pixel(bottom_left)
-    x1, y1 = solar_map.world_to_pixel(top_right)
-    limits = [x0.value, x1.value, y0.value, y1.value]
-    if np.all(np.isfinite(limits)):
-        ax.set_xlim(sorted([x0.value, x1.value]))
-        ax.set_ylim(sorted([y0.value, y1.value]))
+    ax.set_xlim([-half - x_shift, half - x_shift])
+    ax.set_ylim([-half - y_shift, half - y_shift])
+
+
+def _channel_image(data: np.ndarray, freq_idx: int, pol_idx: int = 0) -> np.ndarray:
+    """Return a 2D ``(y, x)`` image from common slow-pipeline cube layouts."""
+    arr = np.asarray(data)
+    if arr.ndim == 2:
+        return np.asarray(arr, dtype=float)
+    if arr.ndim == 3:
+        return np.asarray(arr[freq_idx, :, :], dtype=float)
+    if arr.ndim == 4:
+        return np.asarray(arr[pol_idx, freq_idx, :, :], dtype=float)
+    raise ValueError(f"Expected a 2D, 3D, or 4D FITS image cube, got shape {arr.shape}")
+
+
+def _channel_header(header, freq_hz: float | None = None):
+    """Return a 2D HPLN/HPLT header suitable for a SunPy map channel slice."""
+    channel_header = header.copy()
+    channel_header["NAXIS"] = 2
+    if "NAXIS1" in header:
+        channel_header["NAXIS1"] = header["NAXIS1"]
+    if "NAXIS2" in header:
+        channel_header["NAXIS2"] = header["NAXIS2"]
+
+    for axis in range(3, int(header.get("NAXIS", 2)) + 1):
+        for prefix in ("NAXIS", "CTYPE", "CRVAL", "CDELT", "CRPIX", "CUNIT", "CROTA"):
+            key = f"{prefix}{axis}"
+            if key in channel_header:
+                del channel_header[key]
+    for key in list(channel_header):
+        upper = key.upper()
+        if upper.startswith("PC") or upper.startswith("CD"):
+            suffix = upper[2:] if upper.startswith("PC") else upper[2:]
+            parts = suffix.replace("_", " ").split()
+            try:
+                axes = [int(part) for part in parts[:2]]
+            except ValueError:
+                continue
+            if len(axes) == 2 and max(axes) > 2:
+                del channel_header[key]
+
+    if freq_hz is not None:
+        channel_header["RESTFRQ"] = float(freq_hz)
+    return channel_header
+
+
+def _axis_edges_arcsec(header, axis: int, n_pix: int) -> np.ndarray:
+    crpix = float(_header_get(header, f"CRPIX{axis}", (n_pix + 1) / 2.0))
+    crval = float(_header_get(header, f"CRVAL{axis}", 0.0))
+    cdelt = float(_header_get(header, f"CDELT{axis}", 1.0))
+    pixels = np.array([0.5, n_pix + 0.5], dtype=float)
+    return (pixels - crpix) * cdelt + crval
+
+
+def _image_extent_arcsec(header, image: np.ndarray) -> list[float]:
+    ny, nx = image.shape
+    x0, x1 = _axis_edges_arcsec(header, 1, nx)
+    y0, y1 = _axis_edges_arcsec(header, 2, ny)
+    return [float(x0), float(x1), float(y0), float(y1)]
+
+
+def _plot_solar_limb(ax, solar_map, header) -> None:
+    radius = _header_get(header, "RSUN_OBS")
+    if radius is None:
+        try:
+            radius = solar_map.rsun_obs.to_value(u.arcsec)
+        except Exception:
+            radius = None
+    if radius is not None and np.isfinite(float(radius)):
+        ax.add_patch(Circle((0.0, 0.0), float(radius), fc="none", ec="w", lw=1.2, alpha=0.5))
+
+
+def _available_cmap(preferred: str, fallback: str = "afmhot"):
+    try:
+        return plt.get_cmap(preferred)
+    except ValueError:
+        return plt.get_cmap(fallback)
+
+
+def _logo_image(logo_string: str) -> np.ndarray:
+    return mpimg.imread(io.BytesIO(base64.b64decode(logo_string)), format="png")
+
+
+def _add_default_logos(fig) -> None:
+    ax_logo1 = fig.add_axes([0.015, 0.035, 0.07, 0.07])
+    ax_logo2 = fig.add_axes([0.005, -0.003, 0.09, 0.08])
+    ax_logo1.imshow(_logo_image(NJIT_LOGO_STR))
+    ax_logo2.imshow(_logo_image(CALTECH_LOGO))
+    ax_logo1.axis("off")
+    ax_logo2.axis("off")
 
 
 def _hide_wcs_axis_labels(ax, panel_index: int) -> None:
@@ -122,6 +215,7 @@ def slow_pipeline_default_plot(
     freqs_plt: Sequence[float] = (34.1, 38.7, 43.2, 47.8, 52.4, 57.0, 61.6, 66.2, 70.8, 75.4, 80.0, 84.5),
     fov: float = 7998,
     add_logo: bool = True,
+    interpolation: str = "bicubic",
     apply_refraction_param: bool = False,
     spec_fits=None,
     spec_dur: float = 600.0,
@@ -141,7 +235,7 @@ def slow_pipeline_default_plot(
     """
     from . import ndfits
 
-    del add_logo, spec_fits, spec_dur, spec_cmap, spec_vmin, spec_vmax, spec_norm, spec_frange
+    del spec_fits, spec_dur, spec_cmap, spec_vmin, spec_vmax, spec_norm, spec_frange
 
     meta, rdata = ndfits.read(fname)
     header = meta.get("header", {})
@@ -163,15 +257,22 @@ def slow_pipeline_default_plot(
     do_badants_label = badants_arr is not None and len(badants_arr) == len(freqs_mhz)
     badants_arr = np.asarray(badants_arr) if do_badants_label else None
 
+    image_cmap = _available_cmap("hinodexrt")
     axes = []
     for i in range(12):
+        ax = fig.add_subplot(gs[i])
+        ax.set_facecolor("black")
+        freq_plt = freqs_plt[i]
+        ax.text(0.02, 0.98, f"{freq_plt:.0f} MHz", color="w", ha="left", va="top", fontsize=11, transform=ax.transAxes)
+        ax.set_xlabel("Solar X [arcsec]")
+        ax.set_ylabel("Solar Y [arcsec]")
+        plt.setp(ax.yaxis.get_majorticklabels(), rotation=90, ha="center", va="center", rotation_mode="anchor")
+
         if np.min(np.abs(freqs_mhz - freqs_plt[i])) < 2.0:
             bd = int(np.argmin(np.abs(freqs_mhz - freqs_plt[i])))
-            image = np.squeeze(rdata[0, bd, :, :] / 1e6)
-            solar_map = smap.Map(image, header.copy())
-            ax = fig.add_subplot(gs[i], projection=solar_map)
-            ax.set_facecolor("black")
-            ax.text(0.02, 0.98, f"{freqs_plt[i]:.0f} MHz", color="w", ha="left", va="top", fontsize=11, transform=ax.transAxes)
+            image = _channel_image(rdata, bd) / 1e6
+            channel_header = _channel_header(header, freqs_mhz[bd] * 1e6)
+            solar_map = smap.Map(image, channel_header)
 
             if apply_refraction_param and not rfrcor:
                 x_shift = _safe_channel(meta, "refra_shift_x", bd, 0.0)
@@ -183,22 +284,26 @@ def slow_pipeline_default_plot(
             vmaxplt = np.nanpercentile(image, 99.9)
             if not np.isfinite(vmaxplt):
                 vmaxplt = None
-            solar_map.plot(axes=ax, cmap="inferno", vmin=0, vmax=vmaxplt, annotate=False)
-            solar_map.draw_limb(axes=ax, color="w", alpha=0.5, linewidth=1.2)
-            _set_sunpy_map_fov(ax, solar_map, fov, x_shift=x_shift, y_shift=y_shift)
+            ax.imshow(
+                solar_map.data,
+                origin="lower",
+                extent=_image_extent_arcsec(channel_header, image),
+                cmap=image_cmap,
+                vmin=0,
+                vmax=vmaxplt,
+                interpolation=interpolation,
+            )
+            _plot_solar_limb(ax, solar_map, channel_header)
+            _set_solar_axes_fov(ax, fov, x_shift=x_shift, y_shift=y_shift)
 
             bmaj = _safe_channel(meta, "bmaj", bd, 0.0)
             bmin = _safe_channel(meta, "bmin", bd, 0.0)
             bpa = _safe_channel(meta, "bpa", bd, 0.0)
             if bmaj > 0 and bmin > 0:
-                scale_x = abs(solar_map.scale.axis1.to_value(u.arcsec / u.pix))
-                scale_y = abs(solar_map.scale.axis2.to_value(u.arcsec / u.pix))
-                nx = float(solar_map.dimensions.x.value)
-                ny = float(solar_map.dimensions.y.value)
                 beam = Ellipse(
-                    (nx * 0.14, ny * 0.14),
-                    bmaj * 3600 / scale_x,
-                    bmin * 3600 / scale_y,
+                    (-fov * 0.375, -fov * 0.375),
+                    bmaj * 3600,
+                    bmin * 3600,
                     angle=-(90 - bpa),
                     fc="none",
                     lw=2,
@@ -229,26 +334,20 @@ def slow_pipeline_default_plot(
                     transform=ax.transAxes,
                 )
         else:
-            ax = fig.add_subplot(gs[i])
-            ax.set_facecolor("black")
-            ax.text(0.02, 0.98, f"{freqs_plt[i]:.0f} MHz", color="w", ha="left", va="top", fontsize=11, transform=ax.transAxes)
             ax.text(0.5, 0.5, "No Data", color="w", ha="center", va="center", fontsize=18, transform=ax.transAxes)
-            ax.set_xlim([-fov / 2, fov / 2])
-            ax.set_ylim([-fov / 2, fov / 2])
-            if i not in [8, 9, 10, 11]:
-                ax.set_xlabel("")
-                ax.get_xaxis().set_ticks([])
-            if i not in [0, 4, 8]:
-                ax.set_ylabel("")
-                ax.get_yaxis().set_ticks([])
-        if hasattr(ax, "coords"):
-            _hide_wcs_axis_labels(ax, i)
+            _set_solar_axes_fov(ax, fov)
+        if i not in [8, 9, 10, 11]:
+            ax.set_xlabel("")
+            ax.get_xaxis().set_ticks([])
+        if i not in [0, 4, 8]:
+            ax.set_ylabel("")
+            ax.get_yaxis().set_ticks([])
         axes.append(ax)
 
     suffix = "[refraction corrected]" if rfrcor else "[original]"
     fig.suptitle(f"OVRO-LWA {str(date_obs)[:19]} {suffix}", fontsize=12)
-    fig.supxlabel("Helioprojective longitude [arcsec]", fontsize=10)
-    fig.supylabel("Helioprojective latitude [arcsec]", fontsize=10)
+    if add_logo:
+        _add_default_logos(fig)
     return fig, axes
 
 
