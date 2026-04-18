@@ -1,8 +1,14 @@
 from pathlib import Path
 
-SETTINGS_DIR = Path(__file__).resolve().parents[1] / "settings_mat_file"
+from .resources import settings_file_path
+
+SETTINGS_DIR = Path(__file__).resolve().parent / "settings_mat_file"
 DEFAULT_SETTINGS_PATH = SETTINGS_DIR / "20251120a-settingsAll-day-FW7p5.mat"
 DEFAULT_NIGHT_SETTINGS_PATH = SETTINGS_DIR / "20251120f-settingsAll-night-FW7p5.mat"
+if not DEFAULT_SETTINGS_PATH.exists():
+    DEFAULT_SETTINGS_PATH = settings_file_path("20251120a-settingsAll-day-FW7p5.mat")
+if not DEFAULT_NIGHT_SETTINGS_PATH.exists():
+    DEFAULT_NIGHT_SETTINGS_PATH = settings_file_path("20251120f-settingsAll-night-FW7p5.mat")
 NUM_SIGNALS = 704
 ISTART = 561
 IEND = 3632

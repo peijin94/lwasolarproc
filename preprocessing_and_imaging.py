@@ -28,15 +28,17 @@ from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
 try:
+    from .resources import aoflagger_strategy_path
     from .wsclean_helper import WSCleanOptions, expected_image_fits, run_wsclean
 except ImportError:  # pragma: no cover - supports direct script execution.
+    from resources import aoflagger_strategy_path
     from wsclean_helper import WSCleanOptions, expected_image_fits, run_wsclean
 
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 ROOT = PACKAGE_DIR.parent
 DEFAULT_WORK_DIR = ROOT / "tests" / "_lwasolarproc_fullband"
-DEFAULT_AOFLAGGER_STRATEGY = PACKAGE_DIR / "LWA_sun_PZ.lua"
+DEFAULT_AOFLAGGER_STRATEGY = aoflagger_strategy_path()
 DEFAULT_SOURCES_JSON = ROOT / "TTCalX" / "sources.json"
 if not DEFAULT_SOURCES_JSON.exists():
     DEFAULT_SOURCES_JSON = ROOT / "TTCal.jl" / "test" / "sources.json"

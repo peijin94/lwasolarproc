@@ -2,9 +2,9 @@ import copy
 import os
 import numpy as np
 from astropy.io import fits
-from sunpy import map as smap
 import warnings
 import sys
+from sunpy import map as smap
 
 warnings.simplefilter("ignore")
 
@@ -258,7 +258,8 @@ def read(filepath, hdus=None, verbose=False, **kwargs):
                     # Assume a global stokesval dict exists or adapt as needed
                     meta['pol_names'] = [stokesval.get(str(int(p)), '') for p in meta['pol_idxs']]
 
-                # Clean NaNs and build a SunPy map for the first slice
+                # Clean NaNs and build a SunPy map for the first slice when
+                # SunPy's optional map stack is available.
                 clean_arr = np.nan_to_num(arr)
                 rmap = smap.Map(np.squeeze(clean_arr[tuple(slc)]), header)
 

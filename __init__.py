@@ -14,6 +14,7 @@ from .util import (
     copy_data_from_datetime_str,
     recover_fits_from_h5,
 )
+from .resources import aoflagger_strategy_path, resource_path, settings_file_path
 from .wsclean_helper import WSCleanOptions, build_wsclean_command, run_wsclean
 
 
@@ -26,11 +27,14 @@ def __getattr__(name):
 
 __all__ = [
     "ALL_BANDS_MHZ",
+    "aoflagger_strategy_path",
     "check_h5_fits_consistency",
     "compress_fits_to_h5",
     "copy_data_from_datetime_str",
     "PipelineConfig",
     "recover_fits_from_h5",
+    "resource_path",
+    "settings_file_path",
     "WSCleanOptions",
     "DEFAULT_SETTINGS_PATH",
     "DEFAULT_NIGHT_SETTINGS_PATH",

@@ -14,11 +14,12 @@ import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
 from astropy import units as u
-from astropy.coordinates import AltAz, EarthLocation, get_sun
+from astropy.coordinates import AltAz, EarthLocation, SkyCoord, get_sun
 from astropy.io import fits
 from astropy.time import Time
 from matplotlib import gridspec
-from matplotlib.patches import Circle, Ellipse
+from matplotlib.patches import Ellipse
+from sunpy import map as smap
 
 
 OVRO_LWA_LOCATION = EarthLocation(lat=37.23977727 * u.deg, lon=-118.2816667 * u.deg, height=1183 * u.m)
@@ -91,6 +92,31 @@ def _extent_from_fov(fov: float) -> list[float]:
     return [-half, half, -half, half]
 
 
+def _set_sunpy_map_fov(ax, solar_map, fov: float, x_shift: float = 0.0, y_shift: float = 0.0) -> None:
+    half = fov / 2.0
+    bottom_left = SkyCoord((-half - x_shift) * u.arcsec, (-half - y_shift) * u.arcsec, frame=solar_map.coordinate_frame)
+    top_right = SkyCoord((half - x_shift) * u.arcsec, (half - y_shift) * u.arcsec, frame=solar_map.coordinate_frame)
+    x0, y0 = solar_map.world_to_pixel(bottom_left)
+    x1, y1 = solar_map.world_to_pixel(top_right)
+    limits = [x0.value, x1.value, y0.value, y1.value]
+    if np.all(np.isfinite(limits)):
+        ax.set_xlim(sorted([x0.value, x1.value]))
+        ax.set_ylim(sorted([y0.value, y1.value]))
+
+
+def _hide_wcs_axis_labels(ax, panel_index: int) -> None:
+    ax.coords[0].set_format_unit(u.arcsec)
+    ax.coords[1].set_format_unit(u.arcsec)
+    ax.coords[0].set_axislabel("")
+    ax.coords[1].set_axislabel("")
+    if panel_index not in [8, 9, 10, 11]:
+        ax.coords[0].set_ticklabel_visible(False)
+        ax.coords[0].set_ticks_visible(False)
+    if panel_index not in [0, 4, 8]:
+        ax.coords[1].set_ticklabel_visible(False)
+        ax.coords[1].set_ticks_visible(False)
+
+
 def slow_pipeline_default_plot(
     fname,
     freqs_plt: Sequence[float] = (34.1, 38.7, 43.2, 47.8, 52.4, 57.0, 61.6, 66.2, 70.8, 75.4, 80.0, 84.5),
@@ -139,38 +165,40 @@ def slow_pipeline_default_plot(
 
     axes = []
     for i in range(12):
-        ax = fig.add_subplot(gs[i])
-        ax.set_facecolor("black")
-        ax.set_xlabel("Solar X [arcsec]")
-        ax.set_ylabel("Solar Y [arcsec]")
-        ax.text(0.02, 0.98, f"{freqs_plt[i]:.0f} MHz", color="w", ha="left", va="top", fontsize=11, transform=ax.transAxes)
-        plt.setp(ax.yaxis.get_majorticklabels(), rotation=90, ha="center", va="center", rotation_mode="anchor")
-
         if np.min(np.abs(freqs_mhz - freqs_plt[i])) < 2.0:
             bd = int(np.argmin(np.abs(freqs_mhz - freqs_plt[i])))
             image = np.squeeze(rdata[0, bd, :, :] / 1e6)
+            solar_map = smap.Map(image, header.copy())
+            ax = fig.add_subplot(gs[i], projection=solar_map)
+            ax.set_facecolor("black")
+            ax.text(0.02, 0.98, f"{freqs_plt[i]:.0f} MHz", color="w", ha="left", va="top", fontsize=11, transform=ax.transAxes)
 
             if apply_refraction_param and not rfrcor:
                 x_shift = _safe_channel(meta, "refra_shift_x", bd, 0.0)
                 y_shift = _safe_channel(meta, "refra_shift_y", bd, 0.0)
-                extent = [value - shift for value, shift in zip(_extent_from_fov(fov), (x_shift, x_shift, y_shift, y_shift))]
             else:
-                extent = _extent_from_fov(fov)
+                x_shift = 0.0
+                y_shift = 0.0
 
             vmaxplt = np.nanpercentile(image, 99.9)
             if not np.isfinite(vmaxplt):
                 vmaxplt = None
-            ax.imshow(image, origin="lower", extent=extent, cmap="inferno", vmin=0, vmax=vmaxplt)
-            ax.add_patch(Circle((0, 0), 959.63, fill=False, ls="-", lw=1.2, ec="w", alpha=0.5))
+            solar_map.plot(axes=ax, cmap="inferno", vmin=0, vmax=vmaxplt, annotate=False)
+            solar_map.draw_limb(axes=ax, color="w", alpha=0.5, linewidth=1.2)
+            _set_sunpy_map_fov(ax, solar_map, fov, x_shift=x_shift, y_shift=y_shift)
 
             bmaj = _safe_channel(meta, "bmaj", bd, 0.0)
             bmin = _safe_channel(meta, "bmin", bd, 0.0)
             bpa = _safe_channel(meta, "bpa", bd, 0.0)
             if bmaj > 0 and bmin > 0:
+                scale_x = abs(solar_map.scale.axis1.to_value(u.arcsec / u.pix))
+                scale_y = abs(solar_map.scale.axis2.to_value(u.arcsec / u.pix))
+                nx = float(solar_map.dimensions.x.value)
+                ny = float(solar_map.dimensions.y.value)
                 beam = Ellipse(
-                    (-fov / 2 * 0.75, -fov / 2 * 0.75),
-                    bmaj * 3600,
-                    bmin * 3600,
+                    (nx * 0.14, ny * 0.14),
+                    bmaj * 3600 / scale_x,
+                    bmin * 3600 / scale_y,
                     angle=-(90 - bpa),
                     fc="none",
                     lw=2,
@@ -201,20 +229,26 @@ def slow_pipeline_default_plot(
                     transform=ax.transAxes,
                 )
         else:
+            ax = fig.add_subplot(gs[i])
+            ax.set_facecolor("black")
+            ax.text(0.02, 0.98, f"{freqs_plt[i]:.0f} MHz", color="w", ha="left", va="top", fontsize=11, transform=ax.transAxes)
             ax.text(0.5, 0.5, "No Data", color="w", ha="center", va="center", fontsize=18, transform=ax.transAxes)
-
-        ax.set_xlim([-fov / 2, fov / 2])
-        ax.set_ylim([-fov / 2, fov / 2])
-        if i not in [8, 9, 10, 11]:
-            ax.set_xlabel("")
-            ax.get_xaxis().set_ticks([])
-        if i not in [0, 4, 8]:
-            ax.set_ylabel("")
-            ax.get_yaxis().set_ticks([])
+            ax.set_xlim([-fov / 2, fov / 2])
+            ax.set_ylim([-fov / 2, fov / 2])
+            if i not in [8, 9, 10, 11]:
+                ax.set_xlabel("")
+                ax.get_xaxis().set_ticks([])
+            if i not in [0, 4, 8]:
+                ax.set_ylabel("")
+                ax.get_yaxis().set_ticks([])
+        if hasattr(ax, "coords"):
+            _hide_wcs_axis_labels(ax, i)
         axes.append(ax)
 
     suffix = "[refraction corrected]" if rfrcor else "[original]"
     fig.suptitle(f"OVRO-LWA {str(date_obs)[:19]} {suffix}", fontsize=12)
+    fig.supxlabel("Helioprojective longitude [arcsec]", fontsize=10)
+    fig.supylabel("Helioprojective latitude [arcsec]", fontsize=10)
     return fig, axes
 
 
@@ -254,8 +288,12 @@ def make_allsky_image_plots(
         axes.append(ax)
 
     if len(plotted_fits) > 1:
-        timestr0 = os.path.basename(plotted_fits[0]).split(".")[2]
-        timestr = timestr0[:13] + ":" + timestr0[13:15] + ":" + timestr0[15:17]
-        fig.suptitle("OVRO-LWA All Sky Images " + timestr, fontsize=12)
+        basename_parts = os.path.basename(plotted_fits[0]).split(".")
+        if len(basename_parts) > 2:
+            timestr0 = basename_parts[2]
+            timestr = timestr0[:13] + ":" + timestr0[13:15] + ":" + timestr0[15:17]
+            fig.suptitle("OVRO-LWA All Sky Images " + timestr, fontsize=12)
+        else:
+            fig.suptitle("OVRO-LWA All Sky Images", fontsize=12)
         return fig, axes
     return -1

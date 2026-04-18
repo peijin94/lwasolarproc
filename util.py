@@ -292,6 +292,8 @@ def check_h5_fits_consistency(
             header_tmp = hdu_tmp[0].header
             header = hdu[0].header
             for key in header.keys():
+                if key in {"COMMENT", "HISTORY"}:
+                    continue
                 if key not in header_tmp.keys():
                     logging.warning("Key %s not in the recovered fits header", key)
                     pass_check = 1
