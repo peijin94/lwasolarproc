@@ -10,7 +10,8 @@ This module ports the active test full-band workflow into package code:
 5. TTCalSun solve/application mode, normally ``zest``
 6. DP3 average again
 7. chgcentre to the Sun
-8. WSClean Stokes I/V FITS imaging
+8. WSClean MFS Stokes I/V and fine-channel Stokes I FITS imaging
+9. convert J2000 FITS products to helioprojective coordinates and combine them
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ import shutil
 import subprocess
 import sys
 import time
+from collections.abc import Iterable as IterableABC
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -30,10 +32,10 @@ from typing import Iterable, Mapping, Sequence
 
 try:
     from .resources import aoflagger_strategy_path
-    from .wsclean_helper import WSCleanOptions, expected_image_fits, run_wsclean
+    from .wsclean_helper import WSCleanOptions, expected_image_fits, expected_image_fits_paths, run_wsclean
 except ImportError:  # pragma: no cover - supports direct script execution.
     from resources import aoflagger_strategy_path
-    from wsclean_helper import WSCleanOptions, expected_image_fits, run_wsclean
+    from wsclean_helper import WSCleanOptions, expected_image_fits, expected_image_fits_paths, run_wsclean
 
 
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -68,7 +70,7 @@ class BandResult:
     status: str
     work_dir: Path
     elapsed_s: float
-    products: dict[str, Path] = field(default_factory=dict)
+    products: dict[str, object] = field(default_factory=dict)
     timings: dict[str, float] = field(default_factory=dict)
     error: str = ""
 
@@ -97,7 +99,17 @@ class PipelineConfig:
     dry_run: bool = False
     copy_ms: bool = True
     run_ttcalsun: bool = True
-    image_pols: Sequence[str] = ("I", "V")
+    mfs_pols: str = "I,V"
+    run_fine_channel: bool = True
+    fch_pol: str = "I"
+    fch_channels_out: int = 12
+    postprocess_products: bool = True
+    postprocess_cutout_size: int = 256
+    postprocess_usebeam: str = "Memo178Beam"
+    postprocess_beam_correction: bool = True
+    postprocess_to_kelvin: bool = True
+    plot_mfs_i: bool = True
+    plot_dpi: int = 150
     wsclean: WSCleanOptions = field(default_factory=WSCleanOptions)
 
 
@@ -267,7 +279,8 @@ def build_dp3_aoflagger_command(config: PipelineConfig, ms_path: Path) -> list[s
         "steps=[aoflag]",
         "aoflag.type=aoflagger",
         f"aoflag.strategy={config.aoflagger_strategy.resolve()}",
-        "aoflag.keepstatistics=true",
+        "aoflag.keepstatistics=false",
+        "aoflag.quiet=true",
     ]
 
 
@@ -402,33 +415,69 @@ def sun_center_ms(input_ms: Path, config: PipelineConfig, timings: dict[str, flo
     return output_ms
 
 
-def image_with_wsclean(
+def make_wsclean_options(config: PipelineConfig, **overrides: object) -> WSCleanOptions:
+    values = {**config.wsclean.__dict__, "threads": config.threads, "data_column": "DATA"}
+    values.update(overrides)
+    return WSCleanOptions(**values)
+
+
+def run_mfs_wsclean(
     ms_path: Path,
     output_prefix: Path,
     config: PipelineConfig,
-    pol: str,
     timings: dict[str, float],
-) -> Path:
-    options = WSCleanOptions(
-        **{
-            **config.wsclean.__dict__,
-            "threads": config.threads,
-            "pol": pol,
-            "data_column": "DATA",
-        }
+) -> dict[str, Path]:
+    options = make_wsclean_options(config, pol=config.mfs_pols, channels_out=None)
+    start = time.perf_counter()
+    result = run_wsclean(ms_path, output_prefix, options, dry_run=config.dry_run)
+    if config.dry_run:
+        print(f"[dry-run] {shlex_join(result)}")
+    timings["wsclean_mfs_s"] = time.perf_counter() - start
+    pols = [part.strip().upper() for part in config.mfs_pols.split(",") if part.strip()]
+    return {
+        pol.lower(): path
+        for pol, path in zip(pols, expected_image_fits_paths(output_prefix, config.mfs_pols), strict=False)
+    }
+
+
+def collect_channel_image_fits(output_prefix: Path, pol: str) -> list[Path]:
+    candidates = list(output_prefix.parent.glob(f"{output_prefix.name}-*-image.fits"))
+    candidates = [path for path in candidates if "-MFS-" not in path.name]
+    single = expected_image_fits(output_prefix, pol)
+    if single.exists():
+        candidates.append(single)
+    return sorted({path for path in candidates})
+
+
+def run_fine_channel_wsclean(
+    ms_path: Path,
+    output_prefix: Path,
+    config: PipelineConfig,
+    timings: dict[str, float],
+) -> list[Path]:
+    options = make_wsclean_options(
+        config,
+        pol=config.fch_pol,
+        channels_out=config.fch_channels_out,
+        join_polarizations=False,
     )
     start = time.perf_counter()
     result = run_wsclean(ms_path, output_prefix, options, dry_run=config.dry_run)
     if config.dry_run:
         print(f"[dry-run] {shlex_join(result)}")
-    timings[f"wsclean_{pol.lower()}_s"] = time.perf_counter() - start
-    return expected_image_fits(output_prefix, pol)
+    timings["wsclean_fch_i_s"] = time.perf_counter() - start
+    if config.dry_run:
+        return [expected_image_fits(output_prefix, config.fch_pol)]
+    paths = collect_channel_image_fits(output_prefix, config.fch_pol)
+    if not paths:
+        raise FileNotFoundError(f"No fine-channel WSClean FITS products found for prefix {output_prefix}")
+    return paths
 
 
 def process_band(target: BandTarget, config: PipelineConfig) -> BandResult:
     start_total = time.perf_counter()
     timings: dict[str, float] = {}
-    products: dict[str, Path] = {}
+    products: dict[str, object] = {}
     try:
         target.work_dir.mkdir(parents=True, exist_ok=True)
         work_ms = prepare_work_ms(target, config)
@@ -473,10 +522,16 @@ def process_band(target: BandTarget, config: PipelineConfig) -> BandResult:
 
         image_dir = target.work_dir / "images"
         image_dir.mkdir(parents=True, exist_ok=True)
-        for pol in config.image_pols:
-            prefix = image_dir / f"{sun_ms.stem}_after_{config.mode}_sun_centered_{pol.lower()}"
-            fits_path = image_with_wsclean(sun_ms, prefix, config, pol, timings)
-            products[f"sun_centered_{pol.lower()}_fits"] = fits_path
+
+        mfs_prefix = image_dir / f"{sun_ms.stem}_after_{config.mode}_sun_centered_mfs"
+        mfs_fits = run_mfs_wsclean(sun_ms, mfs_prefix, config, timings)
+        for pol, fits_path in mfs_fits.items():
+            products[f"mfs_{pol}_fits"] = fits_path
+
+        if config.run_fine_channel:
+            fch_prefix = image_dir / f"{sun_ms.stem}_after_{config.mode}_sun_centered_fch_i"
+            fch_fits = run_fine_channel_wsclean(sun_ms, fch_prefix, config, timings)
+            products["fch_i_fits"] = fch_fits
 
         status = "ok"
         error = ""
@@ -492,6 +547,145 @@ def process_band(target: BandTarget, config: PipelineConfig) -> BandResult:
         timings=timings,
         error=error,
     )
+
+
+def centered_subregion(fits_path: Path, cutout_size: int) -> list[int] | None:
+    if cutout_size <= 0:
+        return None
+    from astropy.io import fits  # type: ignore
+
+    with fits.open(fits_path) as hdul:
+        ny, nx = hdul[0].data.shape[-2:]
+    if cutout_size > nx or cutout_size > ny:
+        raise ValueError(f"Cutout size {cutout_size} exceeds image shape {(ny, nx)} for {fits_path}")
+    xmin = (nx - cutout_size) // 2
+    ymin = (ny - cutout_size) // 2
+    return [xmin, xmin + cutout_size, ymin, ymin + cutout_size]
+
+
+def _as_paths(value: object) -> list[Path]:
+    if value is None or value == "":
+        return []
+    if isinstance(value, Path):
+        return [value]
+    if isinstance(value, str):
+        return [Path(value)]
+    if isinstance(value, IterableABC):
+        return [Path(item) for item in value]
+    return []
+
+
+def _import_postprocess_helpers():
+    try:
+        from . import ndfits
+        from .coords import fitsj2000tohelio
+    except ImportError:  # pragma: no cover - supports direct script execution.
+        import ndfits  # type: ignore
+        from coords import fitsj2000tohelio  # type: ignore
+    return fitsj2000tohelio, ndfits
+
+
+def convert_and_combine_fits(
+    source_fits: Sequence[Path],
+    *,
+    label: str,
+    output_dir: Path,
+    config: PipelineConfig,
+) -> Path | None:
+    existing = [path for path in source_fits if path.exists()]
+    if not existing:
+        print(f"[postprocess] skip {label}: no FITS files")
+        return None
+
+    fitsj2000tohelio, ndfits = _import_postprocess_helpers()
+    helio_dir = output_dir / "helio" / label
+    helio_dir.mkdir(parents=True, exist_ok=True)
+    converted: list[str] = []
+    for index, src in enumerate(sorted(existing), start=1):
+        out = helio_dir / f"{index:04d}_{src.stem}.helio.fits"
+        subregion = centered_subregion(src, config.postprocess_cutout_size)
+        fitsj2000tohelio(
+            str(src),
+            str(out),
+            toK=config.postprocess_to_kelvin,
+            verbose=False,
+            subregion=subregion,
+            usebeam=config.postprocess_usebeam,
+            beam_correction=config.postprocess_beam_correction,
+        )
+        converted.append(str(out))
+
+    combined_path = output_dir / f"combined_{label}.fits"
+    if combined_path.exists():
+        combined_path.unlink()
+    if len(converted) == 1:
+        shutil.copyfile(converted[0], combined_path)
+        wrapped = str(combined_path)
+    else:
+        wrapped = ndfits.wrap(converted, outfitsfile=str(combined_path), docompress=False, observatory="OVRO-LWA")
+    print(f"[postprocess] {label}: converted={len(converted)} combined={wrapped}")
+    return Path(wrapped)
+
+
+def postprocess_fullband_products(config: PipelineConfig, results: Sequence[BandResult]) -> dict[str, Path]:
+    if not config.postprocess_products:
+        return {}
+    if config.dry_run:
+        print("[postprocess] skip: dry-run")
+        return {}
+
+    ok_results = [result for result in sorted(results, key=lambda item: item.freq_mhz) if result.status == "ok"]
+    groups = {
+        "mfs_I": [path for result in ok_results for path in _as_paths(result.products.get("mfs_i_fits"))],
+        "mfs_V": [path for result in ok_results for path in _as_paths(result.products.get("mfs_v_fits"))],
+        "fch_I": [path for result in ok_results for path in _as_paths(result.products.get("fch_i_fits"))],
+    }
+
+    output_dir = config.work_dir / "combined"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    combined: dict[str, Path] = {}
+    for label, paths in groups.items():
+        combined_path = convert_and_combine_fits(paths, label=label, output_dir=output_dir, config=config)
+        if combined_path is not None:
+            combined[label] = combined_path
+    write_combined_summary(output_dir, combined)
+    plot_mfs_i_default(config, combined)
+    return combined
+
+
+def plot_mfs_i_default(config: PipelineConfig, combined: Mapping[str, Path]) -> Path | None:
+    if not config.plot_mfs_i:
+        return None
+    mfs_i = combined.get("mfs_I")
+    if mfs_i is None:
+        print("[plot] skip mfs_I: combined FITS not found")
+        return None
+
+    import matplotlib  # type: ignore
+
+    matplotlib.use("Agg", force=True)
+    import matplotlib.pyplot as plt  # type: ignore
+
+    try:
+        from .visualization import slow_pipeline_default_plot
+    except ImportError:  # pragma: no cover - supports direct script execution.
+        from visualization import slow_pipeline_default_plot  # type: ignore
+
+    plot_path = mfs_i.with_name(f"{mfs_i.stem}.default_plot.png")
+    fig, _ = slow_pipeline_default_plot(str(mfs_i))
+    fig.savefig(plot_path, dpi=config.plot_dpi)
+    plt.close(fig)
+    print(f"[plot] mfs_I default plot={plot_path}")
+    return plot_path
+
+
+def write_combined_summary(output_dir: Path, combined: Mapping[str, Path]) -> Path:
+    path = output_dir / "combined_products.tsv"
+    lines = ["product\tpath"]
+    for label, product_path in sorted(combined.items()):
+        lines.append(f"{label}\t{product_path}")
+    path.write_text("\n".join(lines) + "\n")
+    return path
 
 
 def process_fullband(
@@ -528,8 +722,10 @@ def process_fullband(
                     f"[done] {target.freq_mhz:>3} MHz status={result.status} "
                     f"elapsed={result.elapsed_s:.2f}s"
                 )
-    write_summary(cfg.work_dir, results)
-    return sorted(results, key=lambda item: item.freq_mhz)
+    sorted_results = sorted(results, key=lambda item: item.freq_mhz)
+    write_summary(cfg.work_dir, sorted_results)
+    postprocess_fullband_products(cfg, sorted_results)
+    return sorted_results
 
 
 def write_summary(work_dir: Path, results: Sequence[BandResult]) -> Path:
@@ -545,11 +741,13 @@ def write_summary(work_dir: Path, results: Sequence[BandResult]) -> Path:
         "ttcalsun_s",
         "average_after_mode_s",
         "sun_centering_s",
-        "wsclean_i_s",
-        "wsclean_v_s",
+        "wsclean_mfs_s",
+        "wsclean_fch_i_s",
         "work_dir",
-        "i_fits",
-        "v_fits",
+        "mfs_i_fits",
+        "mfs_v_fits",
+        "fch_i_fits",
+        "fch_i_fits_count",
         "error",
     ]
     lines = ["\t".join(header)]
@@ -564,11 +762,13 @@ def write_summary(work_dir: Path, results: Sequence[BandResult]) -> Path:
             _fmt_ttcalsun_timing(result),
             _fmt_timing(result, "average_after_mode_s"),
             _fmt_timing(result, "sun_centering_s"),
-            _fmt_timing(result, "wsclean_i_s"),
-            _fmt_timing(result, "wsclean_v_s"),
+            _fmt_timing(result, "wsclean_mfs_s"),
+            _fmt_timing(result, "wsclean_fch_i_s"),
             str(result.work_dir),
-            str(result.products.get("sun_centered_i_fits", "")),
-            str(result.products.get("sun_centered_v_fits", "")),
+            _fmt_product(result.products.get("mfs_i_fits")),
+            _fmt_product(result.products.get("mfs_v_fits")),
+            _fmt_product(result.products.get("fch_i_fits")),
+            str(len(_as_paths(result.products.get("fch_i_fits")))),
             result.error,
         ]
         lines.append("\t".join(row))
@@ -580,6 +780,10 @@ def _fmt_timing(result: BandResult, key: str) -> str:
     if key not in result.timings:
         return ""
     return f"{result.timings[key]:.2f}"
+
+
+def _fmt_product(value: object) -> str:
+    return ";".join(str(path) for path in _as_paths(value))
 
 
 def _fmt_ttcalsun_timing(result: BandResult) -> str:
@@ -622,16 +826,28 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--wsclean-bin", default="wsclean")
     parser.add_argument("--image-size", type=int, default=512)
     parser.add_argument("--scale", default="1.5arcmin")
-    parser.add_argument("--niter", type=int, default=5000)
-    parser.add_argument("--weight", nargs=2, default=["briggs", "0"])
-    parser.add_argument("--horizon-mask", default="10deg")
+    parser.add_argument("--niter", type=int, default=10000)
+    parser.add_argument("--weight", nargs=2, default=["briggs", "-0.5"])
+    parser.add_argument("--horizon-mask", default="5deg")
     parser.add_argument("--wsclean-mem-percent", type=int, default=15)
-    parser.add_argument("--mgain", type=float, default=0.85)
-    parser.add_argument("--auto-mask", type=float, default=6.0)
-    parser.add_argument("--auto-threshold", type=float, default=1.0)
-    parser.add_argument("--multiscale", action="store_true", default=True)
+    parser.add_argument("--mgain", type=float, default=0.8)
+    parser.add_argument("--auto-mask", type=float, default=None)
+    parser.add_argument("--auto-threshold", type=float, default=3.0)
+    parser.add_argument("--minuv-l", type=float, default=10.0)
+    parser.add_argument("--beam-fitting-size", type=int, default=2)
+    parser.add_argument("--mfs-pols", default="I,V", help="Comma-separated polarizations for the MFS WSClean pass.")
+    parser.add_argument("--no-fine-channel", action="store_true", help="Skip the fine-channel Stokes I WSClean pass.")
+    parser.add_argument("--fch-channels-out", type=int, default=12, help="WSClean channels-out for the fine-channel pass.")
+    parser.add_argument("--no-postprocess", action="store_true", help="Skip J2000-to-helio conversion and combined FITS products.")
+    parser.add_argument("--postprocess-cutout-size", type=int, default=256, help="Centered square cutout size. Use 0 for full images.")
+    parser.add_argument("--postprocess-usebeam", default="Memo178Beam")
+    parser.add_argument("--no-postprocess-beam-correction", action="store_true")
+    parser.add_argument("--no-postprocess-kelvin", action="store_true")
+    parser.add_argument("--no-plot-mfs-i", action="store_true", help="Skip default visualization for combined_mfs_I.fits.")
+    parser.add_argument("--plot-dpi", type=int, default=150)
+    parser.add_argument("--multiscale", action="store_true", default=False)
     parser.add_argument("--no-multiscale", action="store_false", dest="multiscale")
-    parser.add_argument("--local-rms", action="store_true", default=True)
+    parser.add_argument("--local-rms", action="store_true", default=False)
     parser.add_argument("--no-local-rms", action="store_false", dest="local_rms")
     parser.add_argument("--reuse-workdir", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
@@ -660,6 +876,16 @@ def config_from_args(args: argparse.Namespace) -> PipelineConfig:
         reuse_workdir=args.reuse_workdir,
         dry_run=args.dry_run,
         run_ttcalsun=not args.skip_ttcalsun,
+        mfs_pols=args.mfs_pols,
+        run_fine_channel=not args.no_fine_channel,
+        fch_channels_out=args.fch_channels_out,
+        postprocess_products=not args.no_postprocess,
+        postprocess_cutout_size=args.postprocess_cutout_size,
+        postprocess_usebeam=args.postprocess_usebeam,
+        postprocess_beam_correction=not args.no_postprocess_beam_correction,
+        postprocess_to_kelvin=not args.no_postprocess_kelvin,
+        plot_mfs_i=not args.no_plot_mfs_i,
+        plot_dpi=args.plot_dpi,
         wsclean=WSCleanOptions(
             wsclean_bin=args.wsclean_bin,
             threads=args.threads,
@@ -674,6 +900,8 @@ def config_from_args(args: argparse.Namespace) -> PipelineConfig:
             auto_mask=args.auto_mask,
             auto_threshold=args.auto_threshold,
             horizon_mask=args.horizon_mask,
+            minuv_l=args.minuv_l,
+            beam_fitting_size=args.beam_fitting_size,
             multiscale=args.multiscale,
             local_rms=args.local_rms,
         ),

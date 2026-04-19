@@ -16,6 +16,15 @@ from .util import (
 )
 from .resources import aoflagger_strategy_path, resource_path, settings_file_path
 from .wsclean_helper import WSCleanOptions, build_wsclean_command, run_wsclean
+from .beammodel import (
+    BeamModel,
+    ConstantBeam,
+    Memo178Beam,
+    SineBeam,
+    ZernikeBeam,
+    beam_model,
+    congruence_transform,
+)
 
 
 def __getattr__(name):
@@ -39,6 +48,13 @@ __all__ = [
     "DEFAULT_SETTINGS_PATH",
     "DEFAULT_NIGHT_SETTINGS_PATH",
     "build_wsclean_command",
+    "BeamModel",
+    "ConstantBeam",
+    "Memo178Beam",
+    "SineBeam",
+    "ZernikeBeam",
+    "beam_model",
+    "congruence_transform",
     "build_gain_table",
     "build_day_night_conversion_table",
     "equalizer_func",

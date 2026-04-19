@@ -15,6 +15,7 @@ dependencies = [
     "mpl-animators>=1.2.0",
     "numpy",
     "reproject>=0.13.0",
+    "scikit-image",
     "scipy",
     "sunpy",
 ]

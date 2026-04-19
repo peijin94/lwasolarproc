@@ -31,26 +31,29 @@ class WSCleanOptions:
     scale: str = "1.5arcmin"
     data_column: str = "DATA"
     pol: str = "I"
-    weight: Sequence[str] = ("briggs", "0")
-    niter: int = 5000
-    mgain: float = 0.85
-    auto_mask: float = 6.0
-    auto_threshold: float = 1.0
-    horizon_mask: str = "10deg"
-    multiscale: bool = True
+    weight: Sequence[str] = ("briggs", "-0.5")
+    niter: int = 10000
+    mgain: float = 0.8
+    auto_mask: float | None = None
+    auto_threshold: float = 3.0
+    horizon_mask: str = "5deg"
+    multiscale: bool = False
     multiscale_scale_bias: float = 0.7
     multiscale_max_scales: int = 6
-    local_rms: bool = True
+    local_rms: bool = False
     taper_inner_tukey: str | None = None
     field: str | None = None
     intervals_out: int | None = None
-    minuv_l: float | None = None
-    no_reorder: bool = False
-    no_dirty: bool = False
-    no_update_model_required: bool = False
-    no_negative: bool | None = None
+    channels_out: int | None = None
+    minuv_l: float | None = 10.0
+    beam_fitting_size: int | None = 2
+    no_reorder: bool = True
+    no_dirty: bool = True
+    no_update_model_required: bool = True
+    no_fast_subminor: bool = False
+    no_negative: bool | None = False
     join_polarizations: bool | None = None
-    quiet: bool = False
+    quiet: bool = True
     extra_options: Mapping[str, object] = dataclass_field(default_factory=dict)
 
 
@@ -137,7 +140,6 @@ def build_wsclean_command(
         "mem": opts.mem_percent,
         "mgain": opts.mgain,
         "niter": opts.niter,
-        "auto_mask": opts.auto_mask,
         "auto_threshold": opts.auto_threshold,
         "weight": list(opts.weight),
         "horizon_mask": opts.horizon_mask,
@@ -151,13 +153,17 @@ def build_wsclean_command(
         values["multiscale_scale_bias"] = opts.multiscale_scale_bias
         values["multiscale_max_scales"] = opts.multiscale_max_scales
     _set_option(values, "local_rms", opts.local_rms)
+    _set_option(values, "auto_mask", opts.auto_mask)
     _set_option(values, "taper_inner_tukey", opts.taper_inner_tukey)
     _set_option(values, "field", opts.field)
     _set_option(values, "intervals_out", opts.intervals_out)
+    _set_option(values, "channels_out", opts.channels_out)
     _set_option(values, "minuv_l", opts.minuv_l)
+    _set_option(values, "beam_fitting_size", opts.beam_fitting_size)
     _set_option(values, "no_reorder", opts.no_reorder)
     _set_option(values, "no_dirty", opts.no_dirty)
     _set_option(values, "no_update_model_required", opts.no_update_model_required)
+    _set_option(values, "no_fast_subminor", opts.no_fast_subminor)
     _set_option(values, "quiet", opts.quiet)
 
     pols = {part.strip().upper() for part in opts.pol.split(",") if part.strip()}
@@ -233,6 +239,7 @@ def predict_model(
         str(threads),
         "-mem",
         str(mem_percent),
+        "-quiet",
         "-no-reorder",
         "-predict",
         "-pol",
