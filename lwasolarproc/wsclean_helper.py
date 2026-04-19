@@ -25,9 +25,9 @@ class WSCleanOptions:
     """Common WSClean options used by the LWA solar preprocessing pipeline."""
 
     wsclean_bin: str = "wsclean"
-    threads: int = 8
-    mem_percent: int = 15
-    size: int = 512
+    threads: int = 18
+    mem_percent: int = 8
+    size: int = 384
     scale: str = "1.5arcmin"
     data_column: str = "DATA"
     pol: str = "I"
@@ -225,8 +225,8 @@ def predict_model(
     *,
     pol: str = "I",
     wsclean_bin: str = "wsclean",
-    threads: int = 2,
-    mem_percent: int = 2,
+    threads: int = 18,
+    mem_percent: int = 8,
     field: str = "all",
     dry_run: bool = False,
     check: bool = True,

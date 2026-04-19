@@ -8,8 +8,8 @@ This module ports the active test full-band workflow into package code:
 3. DP3 AOFlagger using ``LWA_sun_PZ.lua``
 4. DP3 average by frequency
 5. TTCalSun solve/application mode, normally ``zest``
-6. DP3 average again
-7. chgcentre to the Sun
+6. chgcentre to the Sun
+7. DP3 average again
 8. WSClean MFS Stokes I/V and fine-channel Stokes I FITS imaging
 9. convert J2000 FITS products to helioprojective coordinates and combine them
 """
@@ -85,7 +85,7 @@ class PipelineConfig:
     casarc: Path | None = DEFAULT_CASARC
     mode: str = "zest"
     beam: str = "lwa178"
-    threads: int = 48
+    threads: int = 18
     avg_chanbin: int = 4
     maxiter: int = 30
     tolerance: float = 1e-4
@@ -103,6 +103,8 @@ class PipelineConfig:
     run_fine_channel: bool = True
     fch_pol: str = "I"
     fch_channels_out: int = 12
+    fch_deconvolution_channels: int | None = None
+    fch_fit_spectral_pol: int | None = None
     postprocess_products: bool = True
     postprocess_cutout_size: int = 256
     postprocess_usebeam: str = "Memo178Beam"
@@ -455,10 +457,18 @@ def run_fine_channel_wsclean(
     config: PipelineConfig,
     timings: dict[str, float],
 ) -> list[Path]:
+    extra_options = dict(config.wsclean.extra_options)
+    if config.fch_deconvolution_channels:
+        extra_options["deconvolution_channels"] = config.fch_deconvolution_channels
+        if config.fch_fit_spectral_pol:
+            extra_options["join_channels"] = True
+            extra_options["fit_spectral_pol"] = config.fch_fit_spectral_pol
+
     options = make_wsclean_options(
         config,
         pol=config.fch_pol,
         channels_out=config.fch_channels_out,
+        extra_options=extra_options,
         join_polarizations=False,
     )
     start = time.perf_counter()
@@ -514,23 +524,23 @@ def process_band(target: BandTarget, config: PipelineConfig) -> BandResult:
             if not config.dry_run:
                 (target.work_dir / f"ttcalsun_{config.mode}.log").write_text(stdout)
 
-        post_mode_ms = run_average_channels(pre_mode_ms, "DATA", config, timings, "average_after_mode_s")
-        products["averaged_after_mode_ms"] = post_mode_ms
-
-        sun_ms = sun_center_ms(post_mode_ms, config, timings)
+        sun_ms = sun_center_ms(pre_mode_ms, config, timings)
         products["sun_centered_ms"] = sun_ms
+
+        post_mode_ms = run_average_channels(sun_ms, "DATA", config, timings, "average_after_mode_s")
+        products["averaged_after_mode_ms"] = post_mode_ms
 
         image_dir = target.work_dir / "images"
         image_dir.mkdir(parents=True, exist_ok=True)
 
-        mfs_prefix = image_dir / f"{sun_ms.stem}_after_{config.mode}_sun_centered_mfs"
-        mfs_fits = run_mfs_wsclean(sun_ms, mfs_prefix, config, timings)
+        mfs_prefix = image_dir / f"{post_mode_ms.stem}_after_{config.mode}_sun_centered_mfs"
+        mfs_fits = run_mfs_wsclean(post_mode_ms, mfs_prefix, config, timings)
         for pol, fits_path in mfs_fits.items():
             products[f"mfs_{pol}_fits"] = fits_path
 
         if config.run_fine_channel:
-            fch_prefix = image_dir / f"{sun_ms.stem}_after_{config.mode}_sun_centered_fch_i"
-            fch_fits = run_fine_channel_wsclean(sun_ms, fch_prefix, config, timings)
+            fch_prefix = image_dir / f"{post_mode_ms.stem}_after_{config.mode}_sun_centered_fch_i"
+            fch_fits = run_fine_channel_wsclean(post_mode_ms, fch_prefix, config, timings)
             products["fch_i_fits"] = fch_fits
 
         status = "ok"
@@ -808,7 +818,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--min-freq", type=int, default=23)
     parser.add_argument("--max-freq", type=int, default=82)
     parser.add_argument("--jobs", type=int, default=1)
-    parser.add_argument("--threads", type=int, default=48)
+    parser.add_argument("--threads", type=int, default=18)
     parser.add_argument("--dp3-bin", default=DEFAULT_DP3_BIN)
     parser.add_argument("--ttcalsun-bin", default=str(DEFAULT_TTCALSUN_BIN))
     parser.add_argument("--sources-json", type=Path, default=DEFAULT_SOURCES_JSON)
@@ -824,12 +834,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--phase-only-maxiter", type=int, default=0)
     parser.add_argument("--observatory", default="OVRO")
     parser.add_argument("--wsclean-bin", default="wsclean")
-    parser.add_argument("--image-size", type=int, default=512)
+    parser.add_argument("--image-size", type=int, default=384)
     parser.add_argument("--scale", default="1.5arcmin")
     parser.add_argument("--niter", type=int, default=10000)
     parser.add_argument("--weight", nargs=2, default=["briggs", "-0.5"])
     parser.add_argument("--horizon-mask", default="5deg")
-    parser.add_argument("--wsclean-mem-percent", type=int, default=15)
+    parser.add_argument("--wsclean-mem-percent", type=int, default=8)
     parser.add_argument("--mgain", type=float, default=0.8)
     parser.add_argument("--auto-mask", type=float, default=None)
     parser.add_argument("--auto-threshold", type=float, default=3.0)
@@ -838,6 +848,18 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--mfs-pols", default="I,V", help="Comma-separated polarizations for the MFS WSClean pass.")
     parser.add_argument("--no-fine-channel", action="store_true", help="Skip the fine-channel Stokes I WSClean pass.")
     parser.add_argument("--fch-channels-out", type=int, default=12, help="WSClean channels-out for the fine-channel pass.")
+    parser.add_argument(
+        "--fch-deconvolution-channels",
+        type=int,
+        default=None,
+        help="Optional WSClean deconvolution-channels value for the fine-channel pass. Disabled by default.",
+    )
+    parser.add_argument(
+        "--fch-fit-spectral-pol",
+        type=int,
+        default=None,
+        help="Optional WSClean fit-spectral-pol value used only when deconvolution-channels is enabled.",
+    )
     parser.add_argument("--no-postprocess", action="store_true", help="Skip J2000-to-helio conversion and combined FITS products.")
     parser.add_argument("--postprocess-cutout-size", type=int, default=256, help="Centered square cutout size. Use 0 for full images.")
     parser.add_argument("--postprocess-usebeam", default="Memo178Beam")
@@ -879,6 +901,8 @@ def config_from_args(args: argparse.Namespace) -> PipelineConfig:
         mfs_pols=args.mfs_pols,
         run_fine_channel=not args.no_fine_channel,
         fch_channels_out=args.fch_channels_out,
+        fch_deconvolution_channels=args.fch_deconvolution_channels,
+        fch_fit_spectral_pol=args.fch_fit_spectral_pol,
         postprocess_products=not args.no_postprocess,
         postprocess_cutout_size=args.postprocess_cutout_size,
         postprocess_usebeam=args.postprocess_usebeam,
