@@ -99,6 +99,20 @@ Current default WSClean imaging settings use `-quiet`, `-j 18`, `-mem 8`, `-size
 
 The 2026-04-19 bright-source fullband benchmark at `/fast/rtpipe/tests/_lwasolarproc_fullband_bright_source_20260419` completed `13/13` bands in `66.97 s` wall time. The per-band average was `56.81 s`, including `21.76 s` for bright source removal, and produced combined MFS I, MFS V, and fine-channel I FITS files plus the default MFS I plot.
 
+## Realtime Task Manager
+
+The package also installs a service-ready realtime manager:
+
+```bash
+lwasolarproc-realtime \
+  --slow-root /lustre/pipeline/slow \
+  --caltable-dir /fast/rtpipe/caltab_h5parm \
+  --proc-tmp ./proc_tmp \
+  --proc-out ./proc_out
+```
+
+The manager watches the UTC slow-data tree through the `55MHz` trigger band, queues a timestamp when more than six configured production bands are visible, and dispatches work to four worker slots once at least three tasks are queued. Each worker copies all available bands at job start, runs the fullband pipeline, publishes FITS/HDF/PNG products under `proc_out/mfs`, `proc_out/fch`, and `proc_out/fig`, writes logs under `proc_out/log`, and removes successful temporary work under `proc_tmp/worker_i/YYYYMMDD_HHMMSS`.
+
 ## Python API
 
 FITS/HDF5 round trip:

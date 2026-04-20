@@ -25,6 +25,7 @@ ms = ["python-casacore"]
 
 [project.scripts]
 lwasolarproc-fullband = "lwasolarproc.preprocessing_and_imaging:main"
+lwasolarproc-realtime = "lwasolarproc.realtime_task_manage:main"
 
 [tool.setuptools.packages.find]
 include = ["lwasolarproc*"]
