@@ -72,6 +72,35 @@ class WorkerResult:
     error: str = ""
 
 
+@contextlib.contextmanager
+def redirect_process_fds(handle):
+    """Redirect child-process stdout/stderr file descriptors to an open log file."""
+    handle.flush()
+    stdout_fd = os.dup(1)
+    stderr_fd = os.dup(2)
+    try:
+        os.dup2(handle.fileno(), 1)
+        os.dup2(handle.fileno(), 2)
+        yield
+    finally:
+        handle.flush()
+        os.dup2(stdout_fd, 1)
+        os.dup2(stderr_fd, 2)
+        os.close(stdout_fd)
+        os.close(stderr_fd)
+
+
+def setup_worker_logging(log_path: Path) -> None:
+    logging.Formatter.converter = time.gmtime
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)sZ %(levelname)s %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%S",
+        handlers=[logging.FileHandler(log_path, encoding="utf-8")],
+        force=True,
+    )
+
+
 class SystemdNotifier:
     def __init__(self) -> None:
         try:
@@ -266,8 +295,13 @@ def run_worker_task(timestamp: str, config: WorkerConfig) -> WorkerResult:
         run_dir = task_dir / "run"
         task_dir.mkdir(parents=True, exist_ok=True)
 
-        with task_log.open("w", encoding="utf-8") as handle:
-            with contextlib.redirect_stdout(handle), contextlib.redirect_stderr(handle):
+        setup_worker_logging(task_log)
+        with task_log.open("a", encoding="utf-8") as handle:
+            with (
+                redirect_process_fds(handle),
+                contextlib.redirect_stdout(handle),
+                contextlib.redirect_stderr(handle),
+            ):
                 copied_bands = copy_available_ms_inputs(
                     slow_root=config.slow_root,
                     bands=config.bands,
@@ -354,6 +388,7 @@ class RealtimeManager:
         self.failed: set[str] = set()
         self.stop_requested = False
         self.completed_count = 0
+        self.scanned_once = False
 
         self.output_dirs = ensure_output_dirs(self.proc_out)
         for worker_id in range(self.workers):
@@ -368,6 +403,10 @@ class RealtimeManager:
         signal.signal(signal.SIGTERM, self.request_stop)
 
     def scan_once(self) -> None:
+        if len(self.queue) >= self.queue_length:
+            logging.debug("Queue already full; skipping scan")
+            return
+        queued_this_scan = 0
         for timestamp in discover_trigger_timestamps(self.slow_root, self.trigger_band, self.scan_lookback_hours):
             if timestamp in self.queued or timestamp in self.running or timestamp in self.done or timestamp in self.failed:
                 continue
@@ -375,20 +414,24 @@ class RealtimeManager:
             if len(available) < self.ready_min_bands:
                 continue
             if len(self.queue) >= self.queue_length:
-                logging.warning("Queue full; leaving %s for a future scan", timestamp)
-                continue
+                logging.info("Queue reached capacity; leaving later timestamps for future scans")
+                break
             task = RealtimeTask(
                 timestamp=timestamp,
                 discovered_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             )
             self.queue.append(task)
             self.queued.add(timestamp)
+            queued_this_scan += 1
             logging.info(
                 "Queued %s with %d visible bands: %s",
                 timestamp,
                 len(available),
                 ",".join(sorted(available)),
             )
+            if len(self.queue) >= self.queue_length:
+                logging.info("Queue reached capacity after adding %d task(s)", queued_this_scan)
+                break
 
     def dispatch_ready(
         self,
@@ -480,8 +523,14 @@ class RealtimeManager:
 
         with ProcessPoolExecutor(max_workers=self.workers) as executor:
             while True:
-                if not self.stop_requested and (self.max_tasks is None or self.completed_count < self.max_tasks):
+                can_scan = (
+                    not self.stop_requested
+                    and (not self.once or not self.scanned_once)
+                    and (self.max_tasks is None or self.completed_count + len(futures) < self.max_tasks)
+                )
+                if can_scan:
                     self.scan_once()
+                    self.scanned_once = True
                 if not self.stop_requested:
                     self.dispatch_ready(executor, idle_workers, futures)
                 self.handle_finished(futures, idle_workers)

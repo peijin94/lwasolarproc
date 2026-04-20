@@ -15,6 +15,10 @@ build/
 dist/
 *.egg-info/
 
+# Local pipeline run outputs
+proc_tmp*/
+proc_out*/
+
 # Virtual environments and local env files
 .venv/
 venv/
@@ -26,4 +30,3 @@ env/
 .ipynb_checkpoints/
 .vscode/
 .idea/
-
