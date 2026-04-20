@@ -1,0 +1,83 @@
+---
+config:
+  layout: dagre
+---
+graph TD
+ subgraph PRE["PRE"]
+        direction LR
+        MS["Measurement Sets<br>full-band MS inputs"]
+        COPY["<b>Copy MS</b><br>----------------<br>Create one per-band working Measurement Set"]
+        APPLYCAL["<b>applycal</b><br>----------------<br>Apply H5Parm bandpass calibration and write CORRECTED_DATA"]
+        AOFLAG["<b>aoflagger</b><br>----------------<br>Flag RFI with bundled LWA_sun_PZ.lua strategy"]
+        AVG1["<b>avg4ch</b><br>----------------<br>Average four frequency channels before solar calibration"]
+        CAL["Bandpass calibration tables<br>DP3 H5Parm per band"]
+  end
+ subgraph PEEL["PEEL"]
+        direction LR
+        TTCAL["<b>TTCalSun</b><br>----------------<br>Run zest solar calibration on the first averaged MS"]
+        SRCIMG["<b>source-list WSClean</b><br>----------------<br>Make temporary full-sky model and save component list"]
+        SOURCES["WSClean sources.txt<br>all clean components"]
+        MASK["<b>mask source list</b><br>----------------<br>Keep only components farther than the Sun exclusion radius"]
+        FAR["Far-source list<br>components selected for subtraction"]
+        SUBTRACT["<b>subtract sources</b><br>----------------<br>Use DP3 predict.operation=subtract for far bright components"]
+  end
+ subgraph IMAGING["IMAGING"]
+        direction LR
+        CENTER["<b>sun_center</b><br>----------------<br>Run chgcentre to move the phase center to the Sun"]
+        AVG2["<b>avg4ch</b><br>----------------<br>Average four channels again after source removal and centering"]
+        MFS["<b>WSClean MFS</b><br>----------------<br>Image multi-frequency Stokes I,V products"]
+        FCH["<b>WSClean FCH</b><br>----------------<br>Image fine-channel Stokes I products"]
+  end
+ subgraph POST["POST"]
+        direction LR
+        HELIO["<b>J2000 to helio</b><br>----------------<br>Convert FITS to helioprojective coordinates with beam/K correction"]
+        COMBINE["<b>combine FITS</b><br>----------------<br>Write combined mfs_I, mfs_V, and fch_I cubes"]
+        FITS["Combined FITS products<br>mfs_I, mfs_V, fch_I"]
+        PLOT["<b>plot MFS I</b><br>----------------<br>Create the default combined MFS Stokes I quicklook"]
+        PNG["Default plot<br>combined MFS I PNG"]
+  end
+    MS --> COPY
+    COPY --> APPLYCAL
+    CAL --> APPLYCAL
+    APPLYCAL --> AOFLAG
+    AOFLAG --> AVG1
+    AVG1 --> TTCAL
+    TTCAL --> SRCIMG & SUBTRACT
+    SRCIMG --> SOURCES
+    SOURCES --> MASK
+    MASK --> FAR
+    FAR --> SUBTRACT
+    SUBTRACT --> CENTER
+    CENTER --> AVG2
+    AVG2 --> MFS & FCH
+    MFS --> HELIO
+    FCH --> HELIO
+    HELIO --> COMBINE
+    COMBINE --> FITS
+    FITS --> PLOT
+    PLOT --> PNG
+
+     MS:::element
+     COPY:::step
+     APPLYCAL:::step
+     AOFLAG:::step
+     AVG1:::step
+     CAL:::element
+     TTCAL:::step
+     SRCIMG:::step
+     SOURCES:::element
+     MASK:::step
+     FAR:::element
+     SUBTRACT:::step
+     CENTER:::step
+     AVG2:::step
+     MFS:::step
+     FCH:::step
+     HELIO:::step
+     COMBINE:::step
+     FITS:::element
+     PLOT:::step
+     PNG:::element
+    classDef element fill:#eef2ff,stroke:#818cf8,stroke-width:1.5px,color:#1e1b4b
+    classDef step fill:#fff7ed,stroke:#fb923c,stroke-width:1.5px,color:#78350f
+    classDef subgraphStyle fill:#f0fdf4,stroke:#4ade80,stroke-width:1.5px,color:#14532d

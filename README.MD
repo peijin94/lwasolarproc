@@ -10,8 +10,11 @@ lwasolarproc/
   README.MD
   lwasolarproc/
     __init__.py
+    coords.py
+    source_list.py
     preprocessing_and_imaging.py
     visualization.py
+    wsclean_helper.py
 ```
 
 The package is intended to be installed from this directory:
@@ -53,7 +56,18 @@ The command wraps the full-band workflow:
 1. copy or reuse Measurement Sets
 2. apply H5Parm calibration with DP3
 3. run AOFlagger with the bundled `LWA_sun_PZ.lua`
-4. average, run TTCalSun, recenter on the Sun, and image with WSClean
+4. average by 4 channels
+5. run TTCalSun
+6. build a WSClean source list and subtract bright sources farther than the Sun exclusion radius
+7. recenter on the Sun
+8. average by 4 channels again
+9. image MFS Stokes I/V and fine-channel Stokes I with WSClean
+10. convert J2000 FITS products to helioprojective coordinates with beam/K correction
+11. combine FITS products and write the default MFS Stokes I quicklook plot
+
+## Pipeline Workflow
+
+![lwasolarproc pipeline workflow](lwa-pipe2.jpg)
 
 Example dry run:
 
@@ -64,6 +78,26 @@ lwasolarproc-fullband \
   --work-dir /tmp/lwasolarproc_fullband \
   --dry-run
 ```
+
+Bright source removal is enabled by default. It runs a temporary full-sky WSClean pass with `-save-source-list`, writes the all-source list, keeps only components farther than `--bright-source-min-distance-deg` from the Sun, and subtracts those components from the post-TTCalSun averaged MS with DP3 `predict.operation=subtract`. The temporary full-sky FITS/model products are deleted by default; use `--keep-bright-source-images` if you need to inspect them.
+
+Useful source-removal options:
+
+```bash
+lwasolarproc-fullband \
+  --ms-dir /fast/rtpipe/MS \
+  --caltable-dir /fast/rtpipe/caltab_h5parm \
+  --work-dir /fast/rtpipe/tests/_lwasolarproc_fullband \
+  --bright-source-min-distance-deg 6 \
+  --bright-source-image-size 4096 \
+  --bright-source-scale 2arcmin
+```
+
+Use `--no-bright-source-removal` to run the older path without source-list subtraction.
+
+Current default WSClean imaging settings use `-quiet`, `-j 18`, `-mem 8`, `-size 384 384`, `-scale 1.5arcmin`, `-weight briggs -0.5`, `-minuv-l 10`, `-auto-threshold 3`, `-niter 10000`, `-mgain 0.8`, `-beam-fitting-size 2`, `-no-reorder`, `-no-update-model-required`, and `-no-dirty`.
+
+The 2026-04-19 bright-source fullband benchmark at `/fast/rtpipe/tests/_lwasolarproc_fullband_bright_source_20260419` completed `13/13` bands in `66.97 s` wall time. The per-band average was `56.81 s`, including `21.76 s` for bright source removal, and produced combined MFS I, MFS V, and fine-channel I FITS files plus the default MFS I plot.
 
 ## Python API
 

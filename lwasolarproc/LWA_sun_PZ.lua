@@ -106,8 +106,6 @@ function execute(input)
         converted_data = tmp
 
         -- aoflagger.visualize(converted_data, "Residual #" .. i, i + iteration_count * 2)
-        aoflagger.set_progress((ipol - 1) * iteration_count + i, #flag_polarizations * iteration_count)
-
         -- Calculate sqrt |x|^2, then smooth it to calculate the local (unnormalized) RMS
         local deviation = aoflagger.norm(converted_data)
         local resized_data = aoflagger.downsample(deviation, 2, 5, true)
@@ -120,7 +118,6 @@ function execute(input)
         -- local deviation.
         converted_data = converted_data / deviation
         -- aoflagger.visualize(converted_data, "Deviation normalized #" .. i, i + iteration_count * 3)
-        aoflagger.set_progress((ipol - 1) * iteration_count + i, #flag_polarizations * iteration_count)
       end -- end of iterations
 
       if use_input_flags then
@@ -161,7 +158,6 @@ function execute(input)
     end
 
     -- aoflagger.visualize(converted_data, "Residual #" .. iteration_count, 4 * iteration_count)
-    aoflagger.set_progress(ipol, #flag_polarizations)
   end -- end of polarization iterations
 
   if use_input_flags then
@@ -170,11 +166,5 @@ function execute(input)
     aoflagger.scale_invariant_rank_operator(input, 0.2, 0.2)
   end
 
-  if input:is_complex() and input:has_metadata() then
-    -- This command will calculate a few statistics like flag% and stddev over
-    -- time, frequency and baseline and write those to the MS. These can be
-    -- visualized with aoqplot.
-    aoflagger.collect_statistics(input, copy_of_input)
-  end
   input:flag_nans()
 end

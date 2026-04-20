@@ -8,10 +8,11 @@ This module ports the active test full-band workflow into package code:
 3. DP3 AOFlagger using ``LWA_sun_PZ.lua``
 4. DP3 average by frequency
 5. TTCalSun solve/application mode, normally ``zest``
-6. chgcentre to the Sun
-7. DP3 average again
-8. WSClean MFS Stokes I/V and fine-channel Stokes I FITS imaging
-9. convert J2000 FITS products to helioprojective coordinates and combine them
+6. remove bright sources farther than the configured Sun exclusion radius
+7. chgcentre to the Sun
+8. DP3 average again
+9. WSClean MFS Stokes I/V and fine-channel Stokes I FITS imaging
+10. convert J2000 FITS products to helioprojective coordinates and combine them
 """
 
 from __future__ import annotations
@@ -32,9 +33,11 @@ from typing import Iterable, Mapping, Sequence
 
 try:
     from .resources import aoflagger_strategy_path
+    from .source_list import distance_to_src_list, get_sun_ra_dec, get_time_mjd, mask_far_sun_sources
     from .wsclean_helper import WSCleanOptions, expected_image_fits, expected_image_fits_paths, run_wsclean
 except ImportError:  # pragma: no cover - supports direct script execution.
     from resources import aoflagger_strategy_path
+    from source_list import distance_to_src_list, get_sun_ra_dec, get_time_mjd, mask_far_sun_sources
     from wsclean_helper import WSCleanOptions, expected_image_fits, expected_image_fits_paths, run_wsclean
 
 
@@ -99,6 +102,14 @@ class PipelineConfig:
     dry_run: bool = False
     copy_ms: bool = True
     run_ttcalsun: bool = True
+    run_bright_source_removal: bool = True
+    bright_source_min_distance_deg: float = 6.0
+    bright_source_image_size: int = 4096
+    bright_source_scale: str = "2arcmin"
+    bright_source_niter: int = 1500
+    bright_source_mgain: float = 0.9
+    bright_source_horizon_mask: str = "0.1deg"
+    bright_source_cleanup_images: bool = True
     mfs_pols: str = "I,V"
     run_fine_channel: bool = True
     fch_pol: str = "I"
@@ -257,6 +268,10 @@ def build_targets(
 def build_dp3_applycal_command(config: PipelineConfig, ms_path: Path, caltable: Path) -> list[str]:
     return [
         config.dp3_bin,
+        "verbosity=quiet",
+        "showcounts=false",
+        "showprogress=false",
+        "showtimings=false",
         f"msin={ms_path}",
         "msin.datacolumn=DATA",
         "msout=.",
@@ -274,6 +289,10 @@ def build_dp3_applycal_command(config: PipelineConfig, ms_path: Path, caltable: 
 def build_dp3_aoflagger_command(config: PipelineConfig, ms_path: Path) -> list[str]:
     return [
         config.dp3_bin,
+        "verbosity=quiet",
+        "showcounts=false",
+        "showprogress=false",
+        "showtimings=false",
         f"msin={ms_path}",
         "msin.datacolumn=CORRECTED_DATA",
         "msout=.",
@@ -282,7 +301,6 @@ def build_dp3_aoflagger_command(config: PipelineConfig, ms_path: Path) -> list[s
         "aoflag.type=aoflagger",
         f"aoflag.strategy={config.aoflagger_strategy.resolve()}",
         "aoflag.keepstatistics=false",
-        "aoflag.quiet=true",
     ]
 
 
@@ -294,6 +312,10 @@ def build_dp3_averager_command(
 ) -> list[str]:
     return [
         config.dp3_bin,
+        "verbosity=quiet",
+        "showcounts=false",
+        "showprogress=false",
+        "showtimings=false",
         f"msin={input_ms}",
         f"msin.datacolumn={input_column}",
         f"msout={output_ms}",
@@ -301,6 +323,29 @@ def build_dp3_averager_command(
         "steps=[avg]",
         "avg.type=averager",
         f"avg.freqstep={config.avg_chanbin}",
+    ]
+
+
+def build_dp3_subtract_sources_command(
+    config: PipelineConfig,
+    input_ms: Path,
+    output_ms: Path,
+    source_list: Path,
+) -> list[str]:
+    return [
+        config.dp3_bin,
+        "verbosity=quiet",
+        "showcounts=false",
+        "showprogress=false",
+        "showtimings=false",
+        f"msin={input_ms}",
+        "msin.datacolumn=DATA",
+        f"msout={output_ms}",
+        "msout.overwrite=true",
+        "steps=[predict]",
+        "predict.type=predict",
+        f"predict.sourcedb={source_list}",
+        "predict.operation=subtract",
     ]
 
 
@@ -371,6 +416,143 @@ def run_average_channels(
     )
     timings[key] = time.perf_counter() - start
     return output_ms
+
+
+def source_removal_ms_path(ms_path: Path) -> Path:
+    return ms_path.with_name(f"{ms_path.stem}_bright_sources_removed.ms")
+
+
+def bright_source_wsclean_options(config: PipelineConfig) -> WSCleanOptions:
+    return WSCleanOptions(
+        wsclean_bin=config.wsclean.wsclean_bin,
+        threads=config.threads,
+        mem_percent=config.wsclean.mem_percent,
+        size=config.bright_source_image_size,
+        scale=config.bright_source_scale,
+        data_column="DATA",
+        pol="I",
+        weight=tuple(config.wsclean.weight),
+        niter=config.bright_source_niter,
+        mgain=config.bright_source_mgain,
+        auto_mask=None,
+        auto_threshold=config.wsclean.auto_threshold,
+        horizon_mask=config.bright_source_horizon_mask,
+        minuv_l=config.wsclean.minuv_l,
+        beam_fitting_size=config.wsclean.beam_fitting_size,
+        no_reorder=config.wsclean.no_reorder,
+        no_dirty=config.wsclean.no_dirty,
+        no_update_model_required=config.wsclean.no_update_model_required,
+        no_negative=config.wsclean.no_negative,
+        quiet=config.wsclean.quiet,
+    )
+
+
+def cleanup_wsclean_products(output_prefix: Path, keep_suffixes: set[str]) -> None:
+    for path in output_prefix.parent.glob(f"{output_prefix.name}-*"):
+        if path.suffix == ".txt":
+            continue
+        if any(path.name.endswith(suffix) for suffix in keep_suffixes):
+            continue
+        if path.is_dir():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+
+
+def run_bright_source_removal(
+    input_ms: Path,
+    config: PipelineConfig,
+    timings: dict[str, float],
+) -> tuple[Path, dict[str, Path | int | float]]:
+    output_ms = source_removal_ms_path(input_ms)
+    if output_ms.exists():
+        if config.reuse_workdir:
+            print(f"[reuse] {output_ms}")
+            return output_ms, {"bright_source_removed_ms": output_ms}
+        raise FileExistsError(f"Bright-source-subtracted MS already exists: {output_ms}")
+
+    output_prefix = input_ms.parent / f"{input_ms.stem}_bright_source_model"
+    source_list = output_prefix.with_name(f"{output_prefix.name}-sources.txt")
+    far_source_list = input_ms.parent / f"{input_ms.stem}_far_from_sun_sources.txt"
+    source_distance_csv = input_ms.parent / f"{input_ms.stem}_source_distances.csv"
+
+    print(
+        f"[bright-source-removal] {input_ms.name} -> {output_ms.name} "
+        f"exclude_sun_radius={config.bright_source_min_distance_deg:g}deg"
+    )
+    start = time.perf_counter()
+    options = bright_source_wsclean_options(config)
+    result = run_wsclean(input_ms, output_prefix, options, dry_run=config.dry_run, save_source_list=True)
+    if config.dry_run:
+        print(f"[dry-run] {shlex_join(result)}")
+        print(
+            "[dry-run] bright source source-list masking and DP3 subtract: "
+            f"{source_list} -> {far_source_list} -> {output_ms}"
+        )
+        timings["bright_source_removal_s"] = time.perf_counter() - start
+        return output_ms, {
+            "bright_source_model_prefix": output_prefix,
+            "bright_source_source_list": source_list,
+            "bright_source_far_source_list": far_source_list,
+        }
+
+    if not source_list.exists():
+        raise FileNotFoundError(f"WSClean source list was not created: {source_list}")
+
+    sun_ra, sun_dec = get_sun_ra_dec(get_time_mjd(input_ms), config.observatory)
+    distances = sorted(
+        mask_source_distances(source_list, source_distance_csv, sun_ra, sun_dec),
+        key=lambda item: float(item["distance_deg"]),
+    )
+    mask_far_sun_sources(
+        source_list,
+        far_source_list,
+        sun_ra,
+        sun_dec,
+        distance_deg=config.bright_source_min_distance_deg,
+    )
+
+    run_command(
+        build_dp3_subtract_sources_command(config, input_ms, output_ms, far_source_list),
+        dry_run=False,
+        extra_env=casarc_env(config),
+    )
+    timings["bright_source_removal_s"] = time.perf_counter() - start
+
+    if config.bright_source_cleanup_images:
+        cleanup_wsclean_products(
+            output_prefix,
+            keep_suffixes={"-sources.txt"},
+        )
+
+    return output_ms, {
+        "bright_source_removed_ms": output_ms,
+        "bright_source_model_prefix": output_prefix,
+        "bright_source_source_list": source_list,
+        "bright_source_far_source_list": far_source_list,
+        "bright_source_distance_table": source_distance_csv,
+        "bright_source_all_count": len(distances),
+        "bright_source_subtracted_count": count_source_rows(far_source_list),
+        "sun_ra_deg": sun_ra,
+        "sun_dec_deg": sun_dec,
+    }
+
+
+def mask_source_distances(source_list: Path, output_csv: Path, sun_ra: float, sun_dec: float) -> list[dict[str, object]]:
+    distances = distance_to_src_list(source_list, sun_ra, sun_dec)
+    lines = ["name,flux_jy,distance_deg,ra_deg,dec_deg"]
+    for source in sorted(distances, key=lambda item: float(item["distance_deg"])):
+        lines.append(
+            f"{source['name']},{source.get('flux', 0.0)},{source['distance_deg']},"
+            f"{source['ra_deg']},{source['dec_deg']}"
+        )
+    output_csv.write_text("\n".join(lines) + "\n")
+    return distances
+
+
+def count_source_rows(source_list: Path) -> int:
+    with source_list.open("r", encoding="utf-8") as handle:
+        return max(sum(1 for _ in handle) - 1, 0)
 
 
 def compute_sun_phasecenter(ms_path: Path, observatory: str) -> tuple[str, str, str, str]:
@@ -524,7 +706,12 @@ def process_band(target: BandTarget, config: PipelineConfig) -> BandResult:
             if not config.dry_run:
                 (target.work_dir / f"ttcalsun_{config.mode}.log").write_text(stdout)
 
-        sun_ms = sun_center_ms(pre_mode_ms, config, timings)
+        source_removed_ms = pre_mode_ms
+        if config.run_bright_source_removal:
+            source_removed_ms, source_removal_products = run_bright_source_removal(pre_mode_ms, config, timings)
+            products.update(source_removal_products)
+
+        sun_ms = sun_center_ms(source_removed_ms, config, timings)
         products["sun_centered_ms"] = sun_ms
 
         post_mode_ms = run_average_channels(sun_ms, "DATA", config, timings, "average_after_mode_s")
@@ -749,11 +936,15 @@ def write_summary(work_dir: Path, results: Sequence[BandResult]) -> Path:
         "aoflagger_s",
         "average_before_mode_s",
         "ttcalsun_s",
-        "average_after_mode_s",
+        "bright_source_removal_s",
         "sun_centering_s",
+        "average_after_mode_s",
         "wsclean_mfs_s",
         "wsclean_fch_i_s",
+        "bright_source_all_count",
+        "bright_source_subtracted_count",
         "work_dir",
+        "bright_source_removed_ms",
         "mfs_i_fits",
         "mfs_v_fits",
         "fch_i_fits",
@@ -770,11 +961,15 @@ def write_summary(work_dir: Path, results: Sequence[BandResult]) -> Path:
             _fmt_timing(result, "aoflagger_s"),
             _fmt_timing(result, "average_before_mode_s"),
             _fmt_ttcalsun_timing(result),
-            _fmt_timing(result, "average_after_mode_s"),
+            _fmt_timing(result, "bright_source_removal_s"),
             _fmt_timing(result, "sun_centering_s"),
+            _fmt_timing(result, "average_after_mode_s"),
             _fmt_timing(result, "wsclean_mfs_s"),
             _fmt_timing(result, "wsclean_fch_i_s"),
+            str(result.products.get("bright_source_all_count", "")),
+            str(result.products.get("bright_source_subtracted_count", "")),
             str(result.work_dir),
+            _fmt_product(result.products.get("bright_source_removed_ms")),
             _fmt_product(result.products.get("mfs_i_fits")),
             _fmt_product(result.products.get("mfs_v_fits")),
             _fmt_product(result.products.get("fch_i_fits")),
@@ -833,6 +1028,50 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--peeliter", type=int, default=3)
     parser.add_argument("--phase-only-maxiter", type=int, default=0)
     parser.add_argument("--observatory", default="OVRO")
+    parser.add_argument(
+        "--no-bright-source-removal",
+        action="store_true",
+        help="Skip WSClean source-list based subtraction of bright sources away from the Sun.",
+    )
+    parser.add_argument(
+        "--bright-source-min-distance-deg",
+        type=float,
+        default=6.0,
+        help="Only subtract WSClean components farther than this angular distance from the Sun.",
+    )
+    parser.add_argument(
+        "--bright-source-image-size",
+        type=int,
+        default=4096,
+        help="Full-sky WSClean image size used only to build the source list for subtraction.",
+    )
+    parser.add_argument(
+        "--bright-source-scale",
+        default="2arcmin",
+        help="Full-sky WSClean pixel scale used only to build the source list for subtraction.",
+    )
+    parser.add_argument(
+        "--bright-source-niter",
+        type=int,
+        default=1500,
+        help="Full-sky WSClean niter used only to build the source list for subtraction.",
+    )
+    parser.add_argument(
+        "--bright-source-mgain",
+        type=float,
+        default=0.9,
+        help="Full-sky WSClean mgain used only to build the source list for subtraction.",
+    )
+    parser.add_argument(
+        "--bright-source-horizon-mask",
+        default="0.1deg",
+        help="Full-sky WSClean horizon mask used only to build the source list for subtraction.",
+    )
+    parser.add_argument(
+        "--keep-bright-source-images",
+        action="store_true",
+        help="Keep temporary full-sky WSClean FITS/model products from the source-removal step.",
+    )
     parser.add_argument("--wsclean-bin", default="wsclean")
     parser.add_argument("--image-size", type=int, default=384)
     parser.add_argument("--scale", default="1.5arcmin")
@@ -898,6 +1137,14 @@ def config_from_args(args: argparse.Namespace) -> PipelineConfig:
         reuse_workdir=args.reuse_workdir,
         dry_run=args.dry_run,
         run_ttcalsun=not args.skip_ttcalsun,
+        run_bright_source_removal=not args.no_bright_source_removal,
+        bright_source_min_distance_deg=args.bright_source_min_distance_deg,
+        bright_source_image_size=args.bright_source_image_size,
+        bright_source_scale=args.bright_source_scale,
+        bright_source_niter=args.bright_source_niter,
+        bright_source_mgain=args.bright_source_mgain,
+        bright_source_horizon_mask=args.bright_source_horizon_mask,
+        bright_source_cleanup_images=not args.keep_bright_source_images,
         mfs_pols=args.mfs_pols,
         run_fine_channel=not args.no_fine_channel,
         fch_channels_out=args.fch_channels_out,

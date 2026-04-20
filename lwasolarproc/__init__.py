@@ -16,6 +16,14 @@ from .util import (
 )
 from .resources import aoflagger_strategy_path, resource_path, settings_file_path
 from .wsclean_helper import WSCleanOptions, build_wsclean_command, run_wsclean
+from .source_list import (
+    distance_to_src_list,
+    get_sun_ra_dec,
+    get_time_mjd,
+    load_wsclean_sources,
+    mask_far_sun_sources,
+    parse_wsclean_coordinates,
+)
 from .beammodel import (
     BeamModel,
     ConstantBeam,
@@ -48,6 +56,12 @@ __all__ = [
     "DEFAULT_SETTINGS_PATH",
     "DEFAULT_NIGHT_SETTINGS_PATH",
     "build_wsclean_command",
+    "distance_to_src_list",
+    "get_sun_ra_dec",
+    "get_time_mjd",
+    "load_wsclean_sources",
+    "mask_far_sun_sources",
+    "parse_wsclean_coordinates",
     "BeamModel",
     "ConstantBeam",
     "Memo178Beam",
