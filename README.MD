@@ -69,6 +69,14 @@ The command wraps the full-band workflow:
 
 ![lwasolarproc pipeline workflow](lwa-pipe2.jpg)
 
+Diagram sources live under [`flowchart/`](./flowchart):
+
+- [`flowchart/flowchart.mmd`](./flowchart/flowchart.mmd)
+- [`flowchart/flowchart.drawio`](./flowchart/flowchart.drawio)
+- [`flowchart/task_queue_manage_model.mmd`](./flowchart/task_queue_manage_model.mmd)
+- [`flowchart/task_queue_manage_model_simplify.mmd`](./flowchart/task_queue_manage_model_simplify.mmd)
+- [`flowchart/task_queue_manage_model_simplify.drawio`](./flowchart/task_queue_manage_model_simplify.drawio)
+
 Example dry run:
 
 ```bash
@@ -111,7 +119,198 @@ lwasolarproc-realtime \
   --proc-out ./proc_out
 ```
 
-The manager watches the UTC slow-data tree through the `55MHz` trigger band, queues a timestamp when more than six configured production bands are visible, and dispatches work to four worker slots once at least three tasks are queued. Each worker copies all available bands at job start, runs the fullband pipeline, publishes FITS/HDF/PNG products under `proc_out/mfs`, `proc_out/fch`, and `proc_out/fig`, writes logs under `proc_out/log`, and removes successful temporary work under `proc_tmp/worker_i/YYYYMMDD_HHMMSS`.
+The manager watches the UTC slow-data tree through the `55MHz` trigger band, queues a timestamp when more than six configured production bands are visible, and dispatches work to worker slots once at least `--dispatch-min-queue` tasks are queued. Each worker copies all available bands at job start, runs the fullband pipeline, publishes FITS/HDF/PNG products under `proc_out/mfs`, `proc_out/fch`, and `proc_out/fig`, writes logs under `proc_out/log`, and removes successful temporary work under `proc_tmp/worker_i/YYYYMMDD_HHMMSS`.
+
+Current realtime defaults:
+
+- trigger band: `55MHz`
+- production bands: `23,32,36,41,46,50,55,59,64,69,73,78,82MHz`
+- workers: `4`
+- queue length: `8`
+- dispatch threshold: `3`
+- dispatch stagger: `15 s`
+- ready threshold: `7` visible bands
+- scan interval: `5 s`
+- pipeline jobs: `13`
+- WSClean threads: `18`
+
+Dispatch staggering is enabled by default. When more than one worker is idle, the manager dispatches only one new task and waits at least `15` seconds before dispatching the next one. This reduces the chance that several workers try to copy large Measurement Set directories from Lustre at the same time.
+
+Useful realtime options:
+
+```bash
+lwasolarproc-realtime \
+  --slow-root /lustre/pipeline/slow \
+  --caltable-dir /fast/rtpipe/caltab_h5parm \
+  --proc-tmp /fast/rtpipe/proc_realtime/proc_tmp \
+  --proc-out /fast/rtpipe/proc_realtime/proc_out \
+  --workers 5 \
+  --queue-length 26 \
+  --dispatch-min-queue 3 \
+  --dispatch-stagger-s 15 \
+  --scan-lookback-hours 6 \
+  --once
+```
+
+Important queue behavior in `--once` mode:
+
+- The manager scans once, fills the queue, and keeps dispatching while the queue length is at least `--dispatch-min-queue`.
+- If the remaining queue length drops below `--dispatch-min-queue`, the manager exits after current workers finish.
+- Example: queue length `26` with `--dispatch-min-queue 3` typically processes `24` tasks and leaves the last `2` queued but undispatched.
+- Use `--dispatch-min-queue 1` when you want a bounded `--once` run to drain the full queue.
+
+Realtime worker logs:
+
+- manager log: `proc_out/log/realtime_task_manage.log`
+- per-worker logs: `proc_out/log/YYYYMMDD_HHMMSS.worker_i.log`
+- worker subprocess stdout/stderr is redirected into the per-worker logs so the manager stream stays concise
+
+### Live Tests
+
+Bounded live smoke on `2026-04-20`:
+
+- two workers
+- two completed frames
+- timestamps:
+  - `20260420_180003`
+  - `20260420_180013`
+- frame wall times:
+  - `120.85 s`
+  - `121.26 s`
+
+The products were published under `proc_out_live/mfs`, `proc_out_live/fch`, `proc_out_live/fig`, and `proc_out_live/log`.
+
+### Realtime Benchmark Results
+
+#### 4-worker benchmark without dispatch stagger benefit
+
+Path:
+
+```text
+/fast/rtpipe/proc_realtime
+```
+
+Configuration:
+
+- workers: `4`
+- queue length: `16`
+- dispatch threshold: `3`
+
+Observed result:
+
+- completed: `14`
+- failed: `0`
+- last two queued frames were not dispatched because the queue dropped below `dispatch-min-queue`
+- manager wall stats:
+  - mean: `129.88 s`
+  - median: `130.32 s`
+  - min: `111.64 s`
+  - max: `143.86 s`
+
+Per-frame slowest instrumented steps from the summary TSVs:
+
+| step | mean frame-max |
+|---|---:|
+| bright source removal | 30.50 s |
+| TTCalSun | 17.23 s |
+| WSClean fine-channel I | 16.97 s |
+| AOFlagger | 6.63 s |
+| WSClean MFS I,V | 4.25 s |
+
+#### 5-worker benchmark with 15 s dispatch stagger
+
+Path:
+
+```text
+/fast/rtpipe/proc_realtime
+```
+
+Run window:
+
+- start: `2026-04-20T23:31:14Z`
+- stop: `2026-04-20T23:41:24Z`
+
+Configuration:
+
+- workers: `5`
+- queue length: `26`
+- dispatch threshold: `3`
+- dispatch stagger: `15 s`
+
+Observed result:
+
+- completed: `24`
+- failed: `0`
+- the last `2` queued timestamps were not dispatched because the remaining queue dropped below `dispatch-min-queue`
+- total wall time: `610 s`
+- overall throughput: `24 / 610 = 0.0393 frames/s`
+- overall cadence: about `25.4 s/frame`
+
+Manager per-frame wall statistics:
+
+| metric | value |
+|---|---:|
+| mean | 106.97 s |
+| median | 115.24 s |
+| min | 74.07 s |
+| max | 132.89 s |
+
+Per-frame slowest instrumented steps:
+
+| step | mean frame-max |
+|---|---:|
+| bright source removal | 25.75 s |
+| WSClean fine-channel I | 18.32 s |
+| TTCalSun | 14.08 s |
+| AOFlagger | 5.20 s |
+| WSClean MFS I,V | 4.19 s |
+| sun centering | 1.91 s |
+| applycal | 1.77 s |
+
+The slowest-band elapsed time per frame had:
+
+- mean: `68.29 s`
+- median: `67.80 s`
+
+That leaves an uninstrumented overhead gap of:
+
+- mean: `38.68 s`
+- median: `43.53 s`
+
+This gap includes the realtime wrapper work outside the per-band timers, mainly:
+
+- copying Measurement Sets from Lustre
+- post-processing J2000-to-helio conversion
+- combined FITS assembly
+- HDF compression
+- output publishing
+- cleanup
+
+### Copy-Time Estimate
+
+There is not yet a dedicated copy timer in the realtime worker. The current estimate uses:
+
+```text
+manager dispatch timestamp -> first timestamped line in the worker log
+```
+
+This is an estimate of copy plus a small amount of worker setup, so it is slightly larger than pure copy time.
+
+For the 24 completed staggered frames:
+
+| metric | estimate |
+|---|---:|
+| mean copy+setup | 48.71 s |
+| median | 53.00 s |
+| min | 20.00 s |
+| max | 76.00 s |
+
+Interpretation:
+
+- best mid-run copy+setup was about `20-27 s`
+- worst cases were about `67-76 s`
+
+If exact copy benchmarking is needed, add an explicit timer around `copy_available_ms_inputs()` in `lwasolarproc/realtime_task_manage.py`.
 
 ## Python API
 

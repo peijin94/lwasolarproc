@@ -1,0 +1,98 @@
+---
+config:
+  layout: dagre
+---
+graph TD
+ subgraph INPUTS["INPUTS"]
+        direction LR
+        SLOW["Slow-data tree<br>`/lustre/pipeline/slow/{band}/YYYY-MM-DD/HH/*.ms`"]
+        CAL["Calibration tables<br>`/fast/rtpipe/caltab_h5parm/*.h5parm`"]
+        CONF["Runtime config<br>workers, queue length, dispatch threshold, stagger"]
+  end
+ subgraph DISCOVERY["DISCOVERY AND QUEUE"]
+        direction LR
+        SCAN["<b>scan trigger band</b><br>----------------<br>Poll `55MHz` every 5 s and list UTC timestamps with plain Lustre `ls`"]
+        READY["<b>check band visibility</b><br>----------------<br>Mark a timestamp ready when more than 6 configured bands are present"]
+        DEDUP["<b>deduplicate task</b><br>----------------<br>Skip timestamps already queued, running, done, or failed"]
+        ENQUEUE["<b>enqueue task</b><br>----------------<br>Push timestamp into bounded FIFO queue"]
+        QUEUE["Task queue<br>UTC timestamps waiting for dispatch"]
+  end
+ subgraph DISPATCH["DISPATCH CONTROL"]
+        direction LR
+        GATE["<b>dispatch gate</b><br>----------------<br>Dispatch only when queue length is at least `dispatch-min-queue`"]
+        IDLE["Idle workers<br>available worker slots"]
+        STAGGER["<b>stagger dispatch</b><br>----------------<br>If more than one worker is idle, release only one task every 15 s"]
+        ASSIGN["<b>assign task</b><br>----------------<br>Pop one timestamp from the queue and bind it to one worker"]
+  end
+ subgraph WORKERS["WORKER EXECUTION"]
+        direction LR
+        WORKER["Worker slot<br>`worker_i` process context"]
+        COPY["<b>copy MS inputs</b><br>----------------<br>Copy all visible production-band MS directories into `proc_tmp/worker_i/{timestamp}`"]
+        PROC["<b>run fullband pipeline</b><br>----------------<br>applycal -> aoflagger -> avg4 -> TTCalSun -> bright source removal -> sun center -> avg4 -> WSClean -> helio -> combine -> plot"]
+        LOG["<b>write logs and summaries</b><br>----------------<br>Save manager, worker, summary TSV, and product bookkeeping logs"]
+        CLEAN["<b>cleanup temp tree</b><br>----------------<br>Remove successful worker temporary directories to avoid file accumulation"]
+  end
+ subgraph OUTPUTS["PUBLISHED OUTPUTS"]
+        direction LR
+        MFS["MFS products<br>`proc_out/mfs/*.fits` and `*.hdf`"]
+        FCH["FCH products<br>`proc_out/fch/*.fits` and `*.hdf`"]
+        FIG["Quicklook figures<br>`proc_out/fig/*.png`"]
+        STATUS["Manager state<br>done, failed, running, queue depth"]
+  end
+ subgraph SERVICE["SERVICE LOOP"]
+        direction LR
+        LOOP["<b>main service loop</b><br>----------------<br>Repeat scan -> enqueue -> dispatch -> collect results in UTC time order"]
+        COLLECT["<b>collect worker result</b><br>----------------<br>Mark task done or failed and free the worker slot"]
+  end
+    SLOW --> SCAN
+    CONF --> SCAN
+    SCAN --> READY
+    READY --> DEDUP
+    DEDUP --> ENQUEUE
+    ENQUEUE --> QUEUE
+    QUEUE --> GATE
+    IDLE --> GATE
+    CONF --> GATE
+    GATE --> STAGGER
+    STAGGER --> ASSIGN
+    ASSIGN --> WORKER
+    CAL --> PROC
+    WORKER --> COPY
+    COPY --> PROC
+    PROC --> LOG
+    PROC --> MFS & FCH & FIG
+    LOG --> STATUS
+    LOG --> CLEAN
+    CLEAN --> COLLECT
+    COLLECT --> STATUS
+    COLLECT --> IDLE
+    LOOP --> SCAN
+    COLLECT --> LOOP
+    STATUS --> LOOP
+
+     SLOW:::element
+     CAL:::element
+     CONF:::element
+     QUEUE:::queue
+     IDLE:::queue
+     WORKER:::queue
+     MFS:::element
+     FCH:::element
+     FIG:::element
+     STATUS:::element
+     SCAN:::step
+     READY:::step
+     DEDUP:::step
+     ENQUEUE:::step
+     GATE:::step
+     STAGGER:::step
+     ASSIGN:::step
+     COPY:::step
+     PROC:::step
+     LOG:::step
+     CLEAN:::step
+     LOOP:::step
+     COLLECT:::step
+    classDef element fill:#eef2ff,stroke:#818cf8,stroke-width:1.5px,color:#1e1b4b
+    classDef step fill:#fff7ed,stroke:#fb923c,stroke-width:1.5px,color:#78350f
+    classDef queue fill:#ecfeff,stroke:#06b6d4,stroke-width:1.5px,color:#164e63

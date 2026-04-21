@@ -371,6 +371,7 @@ class RealtimeManager:
         self.ready_min_bands = args.ready_min_bands
         self.queue_length = args.queue_length
         self.dispatch_min_queue = args.dispatch_min_queue
+        self.dispatch_stagger_s = args.dispatch_stagger_s
         self.scan_interval = args.scan_interval
         self.scan_lookback_hours = args.scan_lookback_hours
         self.workers = args.workers
@@ -389,6 +390,7 @@ class RealtimeManager:
         self.stop_requested = False
         self.completed_count = 0
         self.scanned_once = False
+        self.last_dispatch_monotonic: float | None = None
 
         self.output_dirs = ensure_output_dirs(self.proc_out)
         for worker_id in range(self.workers):
@@ -444,6 +446,15 @@ class RealtimeManager:
         while idle_workers and self.queue:
             if self.max_tasks is not None and self.completed_count + len(futures) >= self.max_tasks:
                 break
+            multiple_idle = len(idle_workers) > 1
+            now = time.monotonic()
+            if (
+                multiple_idle
+                and self.dispatch_stagger_s > 0
+                and self.last_dispatch_monotonic is not None
+                and now - self.last_dispatch_monotonic < self.dispatch_stagger_s
+            ):
+                break
             worker_id = idle_workers.pop(0)
             task = self.queue.popleft()
             self.queued.remove(task.timestamp)
@@ -461,7 +472,10 @@ class RealtimeManager:
             )
             future = executor.submit(run_worker_task, task.timestamp, worker_config)
             futures[future] = (worker_id, task.timestamp)
+            self.last_dispatch_monotonic = now
             logging.info("Dispatched %s to worker_%d", task.timestamp, worker_id)
+            if multiple_idle and self.dispatch_stagger_s > 0:
+                break
 
     def handle_finished(
         self,
@@ -579,6 +593,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--queue-length", type=int, default=8)
     parser.add_argument("--dispatch-min-queue", type=int, default=3)
+    parser.add_argument(
+        "--dispatch-stagger-s",
+        type=float,
+        default=15.0,
+        help="Minimum seconds between dispatches when more than one worker is idle.",
+    )
     parser.add_argument("--ready-min-bands", type=int, default=7)
     parser.add_argument("--scan-interval", type=float, default=5.0)
     parser.add_argument("--scan-lookback-hours", type=int, default=1)
@@ -597,6 +617,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--queue-length must be at least 1")
     if args.dispatch_min_queue < 1:
         raise ValueError("--dispatch-min-queue must be at least 1")
+    if args.dispatch_stagger_s < 0:
+        raise ValueError("--dispatch-stagger-s must be non-negative")
     if args.ready_min_bands < 1:
         raise ValueError("--ready-min-bands must be at least 1")
     bands = parse_bands(args.bands)

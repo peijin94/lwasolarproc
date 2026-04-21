@@ -1,0 +1,202 @@
+<mxfile host="app.diagrams.net" agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36 Edg/147.0.0.0" version="29.6.6">
+  <diagram name="LWA Solar Pipeline" id="1-oQtvDMWPjr7KKM-hMm">
+    <mxGraphModel grid="1" page="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="YpNpLiLtAerdsc_-_weu-96" parent="1" style="swimlane;html=1;rounded=1;startSize=30;fillColor=#f0fdf4;strokeColor=#4ade80;strokeWidth=1.5;fontColor=#14532d;horizontal=1;" value="Pre-processing" vertex="1">
+          <mxGeometry height="170" width="1010" x="750" y="860" as="geometry" />
+        </mxCell>
+        <mxCell id="YpNpLiLtAerdsc_-_weu-97" parent="YpNpLiLtAerdsc_-_weu-96" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eef2ff;strokeColor=#818cf8;strokeWidth=1.5;fontColor=#1e1b4b;align=center;verticalAlign=middle;" value="Measurement Sets&lt;br&gt;full-band MS inputs" vertex="1">
+          <mxGeometry height="50" width="150" x="20" y="110" as="geometry" />
+        </mxCell>
+        <mxCell id="YpNpLiLtAerdsc_-_weu-98" parent="YpNpLiLtAerdsc_-_weu-96" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff7ed;strokeColor=#fb923c;strokeWidth=1.5;fontColor=#78350f;align=center;verticalAlign=middle;" value="&lt;div style=&quot;width:100%;height:100%;&quot;&gt;&lt;div style=&quot;text-align:center;font-weight:bold;&quot;&gt;Copy MS&lt;/div&gt;&lt;hr style=&quot;border:none;border-top:1px solid currentColor;margin:6px 0 6px 0;&quot;/&gt;&lt;div style=&quot;text-align:center;&quot;&gt;Create one per-band working Measurement Set&lt;/div&gt;&lt;/div&gt;" vertex="1">
+          <mxGeometry height="70" width="170" x="200" y="80" as="geometry" />
+        </mxCell>
+        <mxCell id="YpNpLiLtAerdsc_-_weu-99" parent="YpNpLiLtAerdsc_-_weu-96" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff7ed;strokeColor=#fb923c;strokeWidth=1.5;fontColor=#78350f;align=center;verticalAlign=middle;" value="&lt;div style=&quot;width:100%;height:100%;&quot;&gt;&lt;div style=&quot;text-align:center;font-weight:bold;&quot;&gt;applycal&lt;/div&gt;&lt;hr style=&quot;border-width: 1px medium medium; border-style: solid none none; border-color: currentcolor; border-image: initial; margin: 6px 0px;&quot;&gt;&lt;div style=&quot;text-align:center;&quot;&gt;Apply H5Parm bandpass calibration&lt;/div&gt;&lt;/div&gt;" vertex="1">
+          <mxGeometry height="70" width="180" x="400" y="80" as="geometry" />
+        </mxCell>
+        <mxCell id="YpNpLiLtAerdsc_-_weu-100" parent="YpNpLiLtAerdsc_-_weu-96" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff7ed;strokeColor=#fb923c;strokeWidth=1.5;fontColor=#78350f;align=center;verticalAlign=middle;" value="&lt;div style=&quot;width:100%;height:100%;&quot;&gt;&lt;div style=&quot;text-align:center;font-weight:bold;&quot;&gt;aoflagger&lt;/div&gt;&lt;hr style=&quot;border:none;border-top:1px solid currentColor;margin:6px 0 6px 0;&quot;/&gt;&lt;div style=&quot;text-align:center;&quot;&gt;Flag RFI with bundled LWA_sun_PZ.lua strategy&lt;/div&gt;&lt;/div&gt;" vertex="1">
+          <mxGeometry height="70" width="180" x="610" y="80" as="geometry" />
+        </mxCell>
+        <mxCell id="YpNpLiLtAerdsc_-_weu-101" parent="YpNpLiLtAerdsc_-_weu-96" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff7ed;strokeColor=#fb923c;strokeWidth=1.5;fontColor=#78350f;align=center;verticalAlign=middle;" value="&lt;div style=&quot;width:100%;height:100%;&quot;&gt;&lt;div style=&quot;text-align:center;font-weight:bold;&quot;&gt;avg4ch&lt;/div&gt;&lt;hr style=&quot;border:none;border-top:1px solid currentColor;margin:6px 0 6px 0;&quot;/&gt;&lt;div style=&quot;text-align:center;&quot;&gt;Average four frequency channels before solar calibration&lt;/div&gt;&lt;/div&gt;" vertex="1">
+          <mxGeometry height="70" width="180" x="820" y="80" as="geometry" />
+        </mxCell>
+        <mxCell id="YpNpLiLtAerdsc_-_weu-122" edge="1" parent="YpNpLiLtAerdsc_-_weu-96" source="YpNpLiLtAerdsc_-_weu-98" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=1.5;" target="YpNpLiLtAerdsc_-_weu-99" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="YpNpLiLtAerdsc_-_weu-124" edge="1" parent="YpNpLiLtAerdsc_-_weu-96" source="YpNpLiLtAerdsc_-_weu-99" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=1.5;" target="YpNpLiLtAerdsc_-_weu-100" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="YpNpLiLtAerdsc_-_weu-125" edge="1" parent="YpNpLiLtAerdsc_-_weu-96" source="YpNpLiLtAerdsc_-_weu-100" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=1.5;" target="YpNpLiLtAerdsc_-_weu-101" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="YpNpLiLtAerdsc_-_weu-102" parent="YpNpLiLtAerdsc_-_weu-96" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eef2ff;strokeColor=#818cf8;strokeWidth=1.5;fontColor=#1e1b4b;align=center;verticalAlign=middle;" value="Bandpass calibration tables&lt;br&gt;DP3 H5Parm per band" vertex="1">
+          <mxGeometry height="60" width="159" x="20" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="YpNpLiLtAerdsc_-_weu-123" edge="1" parent="YpNpLiLtAerdsc_-_weu-96" source="YpNpLiLtAerdsc_-_weu-102" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=1.5;" target="YpNpLiLtAerdsc_-_weu-99" value="">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="490" y="60" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="YpNpLiLtAerdsc_-_weu-121" edge="1" parent="YpNpLiLtAerdsc_-_weu-96" source="YpNpLiLtAerdsc_-_weu-97" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=1.5;" target="YpNpLiLtAerdsc_-_weu-98" value="">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="179" y="135" />
+              <mxPoint x="179" y="115" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="YpNpLiLtAerdsc_-_weu-103" parent="1" style="swimlane;html=1;rounded=1;startSize=30;fillColor=#f0fdf4;strokeColor=#4ade80;strokeWidth=1.5;fontColor=#14532d;horizontal=1;" value="Peeling and bright source removal" vertex="1">
+          <mxGeometry height="190" width="1010" x="750" y="1060" as="geometry" />
+        </mxCell>
+        <mxCell id="YpNpLiLtAerdsc_-_weu-104" parent="YpNpLiLtAerdsc_-_weu-103" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff7ed;strokeColor=#fb923c;strokeWidth=1.5;fontColor=#78350f;align=center;verticalAlign=middle;" value="&lt;div style=&quot;width:100%;height:100%;&quot;&gt;&lt;div style=&quot;text-align:center;font-weight:bold;&quot;&gt;TTCalSun&lt;/div&gt;&lt;hr style=&quot;border-width: 1px medium medium; border-style: solid none none; border-color: currentcolor; border-image: initial; margin: 6px 0px;&quot;&gt;&lt;div style=&quot;text-align:center;&quot;&gt;Run zest direction dependent calibration on the avg4ch MS&lt;/div&gt;&lt;/div&gt;" vertex="1">
+          <mxGeometry height="67" width="170" x="9" y="43" as="geometry" />
+        </mxCell>
+        <mxCell id="YpNpLiLtAerdsc_-_weu-109" parent="YpNpLiLtAerdsc_-_weu-103" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff7ed;strokeColor=#fb923c;strokeWidth=1.5;fontColor=#78350f;align=center;verticalAlign=middle;" value="&lt;div style=&quot;width:100%;height:100%;&quot;&gt;&lt;div style=&quot;text-align:center;font-weight:bold;&quot;&gt;subtract sources&lt;/div&gt;&lt;hr style=&quot;border-width: 1px medium medium; border-style: solid none none; border-color: currentcolor; border-image: initial; margin: 6px 0px;&quot;&gt;&lt;div style=&quot;text-align:center;&quot;&gt;DP3::operation.subtract for bright components&lt;/div&gt;&lt;/div&gt;" vertex="1">
+          <mxGeometry height="67" width="150" x="848" y="43" as="geometry" />
+        </mxCell>
+        <mxCell id="YpNpLiLtAerdsc_-_weu-105" parent="YpNpLiLtAerdsc_-_weu-103" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff7ed;strokeColor=#fb923c;strokeWidth=1.5;fontColor=#78350f;align=center;verticalAlign=middle;" value="&lt;div style=&quot;width:100%;height:100%;&quot;&gt;&lt;div style=&quot;text-align:center;font-weight:bold;&quot;&gt;source-list WSClean&lt;/div&gt;&lt;hr style=&quot;border:none;border-top:1px solid currentColor;margin:6px 0 6px 0;&quot;/&gt;&lt;div style=&quot;text-align:center;&quot;&gt;Make temporary full-sky model and save component list&lt;/div&gt;&lt;/div&gt;" vertex="1">
+          <mxGeometry height="76" width="175" x="185" y="100" as="geometry" />
+        </mxCell>
+        <mxCell id="YpNpLiLtAerdsc_-_weu-106" parent="YpNpLiLtAerdsc_-_weu-103" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eef2ff;strokeColor=#818cf8;strokeWidth=1.5;fontColor=#1e1b4b;align=center;verticalAlign=middle;" value="WSClean sources.txt&lt;br&gt;all clean components" vertex="1">
+          <mxGeometry height="56" width="131" x="380" y="110" as="geometry" />
+        </mxCell>
+        <mxCell id="YpNpLiLtAerdsc_-_weu-107" parent="YpNpLiLtAerdsc_-_weu-103" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff7ed;strokeColor=#fb923c;strokeWidth=1.5;fontColor=#78350f;align=center;verticalAlign=middle;" value="&lt;div style=&quot;width:100%;height:100%;&quot;&gt;&lt;div style=&quot;text-align:center;font-weight:bold;&quot;&gt;mask source list&lt;/div&gt;&lt;hr style=&quot;border:none;border-top:1px solid currentColor;margin:6px 0 6px 0;&quot;/&gt;&lt;div style=&quot;text-align:center;&quot;&gt;Keep only components farther than the Sun exclusion radius&lt;/div&gt;&lt;/div&gt;" vertex="1">
+          <mxGeometry height="76" width="170" x="530" y="100" as="geometry" />
+        </mxCell>
+        <mxCell id="YpNpLiLtAerdsc_-_weu-108" parent="YpNpLiLtAerdsc_-_weu-103" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eef2ff;strokeColor=#818cf8;strokeWidth=1.5;fontColor=#1e1b4b;align=center;verticalAlign=middle;" value="Far-Sun sources.txt&lt;br&gt;components selected for subtraction" vertex="1">
+          <mxGeometry height="66" width="121" x="720" y="105" as="geometry" />
+        </mxCell>
+        <mxCell id="YpNpLiLtAerdsc_-_weu-129" edge="1" parent="YpNpLiLtAerdsc_-_weu-103" source="YpNpLiLtAerdsc_-_weu-105" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=1.5;" target="YpNpLiLtAerdsc_-_weu-106" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="YpNpLiLtAerdsc_-_weu-130" edge="1" parent="YpNpLiLtAerdsc_-_weu-103" source="YpNpLiLtAerdsc_-_weu-106" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=1.5;" target="YpNpLiLtAerdsc_-_weu-107" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="YpNpLiLtAerdsc_-_weu-131" edge="1" parent="YpNpLiLtAerdsc_-_weu-103" source="YpNpLiLtAerdsc_-_weu-107" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=1.5;" target="YpNpLiLtAerdsc_-_weu-108" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="10-qEe_ywi0LsIOAkReH-1" edge="1" parent="YpNpLiLtAerdsc_-_weu-103" source="YpNpLiLtAerdsc_-_weu-104" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=1.5;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" target="YpNpLiLtAerdsc_-_weu-105" value="">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="98" y="150" as="sourcePoint" />
+            <mxPoint x="898" y="150" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="YpNpLiLtAerdsc_-_weu-110" parent="1" style="swimlane;html=1;rounded=1;startSize=30;fillColor=#f0fdf4;strokeColor=#4ade80;strokeWidth=1.5;fontColor=#14532d;horizontal=1;" value="Imaging" vertex="1">
+          <mxGeometry height="160" width="1019" x="741" y="1280" as="geometry" />
+        </mxCell>
+        <mxCell id="YpNpLiLtAerdsc_-_weu-111" parent="YpNpLiLtAerdsc_-_weu-110" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff7ed;strokeColor=#fb923c;strokeWidth=1.5;fontColor=#78350f;align=center;verticalAlign=middle;" value="&lt;div style=&quot;width:100%;height:100%;&quot;&gt;&lt;div style=&quot;text-align:center;font-weight:bold;&quot;&gt;sun_center&lt;/div&gt;&lt;hr style=&quot;border:none;border-top:1px solid currentColor;margin:6px 0 6px 0;&quot;/&gt;&lt;div style=&quot;text-align:center;&quot;&gt;Run chgcentre to move the phase center to the Sun&lt;/div&gt;&lt;/div&gt;" vertex="1">
+          <mxGeometry height="70" width="190" x="55" y="60" as="geometry" />
+        </mxCell>
+        <mxCell id="YpNpLiLtAerdsc_-_weu-112" parent="YpNpLiLtAerdsc_-_weu-110" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff7ed;strokeColor=#fb923c;strokeWidth=1.5;fontColor=#78350f;align=center;verticalAlign=middle;" value="&lt;div style=&quot;width:100%;height:100%;&quot;&gt;&lt;div style=&quot;text-align:center;font-weight:bold;&quot;&gt;avg4ch&lt;/div&gt;&lt;hr style=&quot;border-width: 1px medium medium; border-style: solid none none; border-color: currentcolor; border-image: initial; margin: 6px 0px;&quot;&gt;&lt;div style=&quot;text-align:center;&quot;&gt;Average four channels again after phase centering at Sun&lt;/div&gt;&lt;/div&gt;" vertex="1">
+          <mxGeometry height="70" width="180" x="305" y="60" as="geometry" />
+        </mxCell>
+        <mxCell id="YpNpLiLtAerdsc_-_weu-114" parent="YpNpLiLtAerdsc_-_weu-110" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff7ed;strokeColor=#fb923c;strokeWidth=1.5;fontColor=#78350f;align=center;verticalAlign=middle;" value="&lt;div style=&quot;width:100%;height:100%;&quot;&gt;&lt;div style=&quot;text-align:center;font-weight:bold;&quot;&gt;WSClean FCH&lt;/div&gt;&lt;hr style=&quot;border:none;border-top:1px solid currentColor;margin:6px 0 6px 0;&quot;/&gt;&lt;div style=&quot;text-align:center;&quot;&gt;Image fine-channel Stokes I products&lt;/div&gt;&lt;/div&gt;" vertex="1">
+          <mxGeometry height="60" width="180" x="794" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="YpNpLiLtAerdsc_-_weu-136" edge="1" parent="YpNpLiLtAerdsc_-_weu-110" source="YpNpLiLtAerdsc_-_weu-112" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=1.5;exitX=1;exitY=0.5;exitDx=0;exitDy=0;" target="YpNpLiLtAerdsc_-_weu-114" value="">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="534" y="95" />
+              <mxPoint x="534" y="60" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="YpNpLiLtAerdsc_-_weu-115" parent="1" style="swimlane;html=1;rounded=1;startSize=30;fillColor=#f0fdf4;strokeColor=#4ade80;strokeWidth=1.5;fontColor=#14532d;horizontal=1;" value="Post processing" vertex="1">
+          <mxGeometry height="130" width="1019" x="741" y="1470" as="geometry" />
+        </mxCell>
+        <mxCell id="YpNpLiLtAerdsc_-_weu-116" parent="YpNpLiLtAerdsc_-_weu-115" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff7ed;strokeColor=#fb923c;strokeWidth=1.5;fontColor=#78350f;align=center;verticalAlign=middle;" value="&lt;div style=&quot;width:100%;height:100%;&quot;&gt;&lt;div style=&quot;text-align:center;font-weight:bold;&quot;&gt;J2000 to helio&lt;/div&gt;&lt;hr style=&quot;border:none;border-top:1px solid currentColor;margin:6px 0 6px 0;&quot;/&gt;&lt;div style=&quot;text-align:center;&quot;&gt;Convert FITS to helioprojective coordinates with beam/K correction&lt;/div&gt;&lt;/div&gt;" vertex="1">
+          <mxGeometry height="70" width="200" x="39" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="YpNpLiLtAerdsc_-_weu-117" parent="YpNpLiLtAerdsc_-_weu-115" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff7ed;strokeColor=#fb923c;strokeWidth=1.5;fontColor=#78350f;align=center;verticalAlign=middle;" value="&lt;div style=&quot;width:100%;height:100%;&quot;&gt;&lt;div style=&quot;text-align:center;font-weight:bold;&quot;&gt;combine FITS&lt;/div&gt;&lt;hr style=&quot;border:none;border-top:1px solid currentColor;margin:6px 0 6px 0;&quot;/&gt;&lt;div style=&quot;text-align:center;&quot;&gt;Write combined mfs_I, mfs_V, and fch_I cubes&lt;/div&gt;&lt;/div&gt;" vertex="1">
+          <mxGeometry height="70" width="180" x="259" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="YpNpLiLtAerdsc_-_weu-118" parent="YpNpLiLtAerdsc_-_weu-115" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eef2ff;strokeColor=#818cf8;strokeWidth=1.5;fontColor=#1e1b4b;align=center;verticalAlign=middle;" value="Combined FITS products&lt;br&gt;mfs_I, mfs_V, fch_I" vertex="1">
+          <mxGeometry height="70" width="170" x="459" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="YpNpLiLtAerdsc_-_weu-119" parent="YpNpLiLtAerdsc_-_weu-115" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff7ed;strokeColor=#fb923c;strokeWidth=1.5;fontColor=#78350f;align=center;verticalAlign=middle;" value="&lt;div style=&quot;width:100%;height:100%;&quot;&gt;&lt;div style=&quot;text-align:center;font-weight:bold;&quot;&gt;plot MFS I&lt;/div&gt;&lt;hr style=&quot;border:none;border-top:1px solid currentColor;margin:6px 0 6px 0;&quot;/&gt;&lt;div style=&quot;text-align:center;&quot;&gt;Create the default combined MFS Stokes I quicklook&lt;/div&gt;&lt;/div&gt;" vertex="1">
+          <mxGeometry height="70" width="170" x="649" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="YpNpLiLtAerdsc_-_weu-120" parent="YpNpLiLtAerdsc_-_weu-115" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eef2ff;strokeColor=#818cf8;strokeWidth=1.5;fontColor=#1e1b4b;align=center;verticalAlign=middle;" value="Default plot&lt;br&gt;combined MFS I PNG" vertex="1">
+          <mxGeometry height="70" width="130" x="839" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="YpNpLiLtAerdsc_-_weu-139" edge="1" parent="YpNpLiLtAerdsc_-_weu-115" source="YpNpLiLtAerdsc_-_weu-116" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=1.5;" target="YpNpLiLtAerdsc_-_weu-117" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="YpNpLiLtAerdsc_-_weu-140" edge="1" parent="YpNpLiLtAerdsc_-_weu-115" source="YpNpLiLtAerdsc_-_weu-117" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=1.5;" target="YpNpLiLtAerdsc_-_weu-118" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="YpNpLiLtAerdsc_-_weu-141" edge="1" parent="YpNpLiLtAerdsc_-_weu-115" source="YpNpLiLtAerdsc_-_weu-118" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=1.5;" target="YpNpLiLtAerdsc_-_weu-119" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="YpNpLiLtAerdsc_-_weu-142" edge="1" parent="YpNpLiLtAerdsc_-_weu-115" source="YpNpLiLtAerdsc_-_weu-119" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=1.5;" target="YpNpLiLtAerdsc_-_weu-120" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="YpNpLiLtAerdsc_-_weu-126" edge="1" parent="1" source="YpNpLiLtAerdsc_-_weu-101" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=1.5;" target="YpNpLiLtAerdsc_-_weu-104" value="">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1770" y="975" />
+              <mxPoint x="1770" y="1040" />
+              <mxPoint x="846" y="1040" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="YpNpLiLtAerdsc_-_weu-128" edge="1" parent="1" source="YpNpLiLtAerdsc_-_weu-104" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=1.5;" target="YpNpLiLtAerdsc_-_weu-109" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="YpNpLiLtAerdsc_-_weu-132" edge="1" parent="1" source="YpNpLiLtAerdsc_-_weu-108" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=1.5;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" target="YpNpLiLtAerdsc_-_weu-109" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="YpNpLiLtAerdsc_-_weu-134" edge="1" parent="1" source="YpNpLiLtAerdsc_-_weu-111" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=1.5;" target="YpNpLiLtAerdsc_-_weu-112" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="YpNpLiLtAerdsc_-_weu-137" edge="1" parent="1" source="YpNpLiLtAerdsc_-_weu-113" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=1.5;" target="YpNpLiLtAerdsc_-_weu-116" value="">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1531" y="1398" />
+              <mxPoint x="1531" y="1450" />
+              <mxPoint x="971" y="1450" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="YpNpLiLtAerdsc_-_weu-138" edge="1" parent="1" source="YpNpLiLtAerdsc_-_weu-114" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=1.5;" target="YpNpLiLtAerdsc_-_weu-116" value="">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1750" y="1350" />
+              <mxPoint x="1750" y="1460" />
+              <mxPoint x="971" y="1460" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="YpNpLiLtAerdsc_-_weu-113" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff7ed;strokeColor=#fb923c;strokeWidth=1.5;fontColor=#78350f;align=center;verticalAlign=middle;" value="&lt;div style=&quot;width:100%;height:100%;&quot;&gt;&lt;div style=&quot;text-align:center;font-weight:bold;&quot;&gt;WSClean MFS&lt;/div&gt;&lt;hr style=&quot;border:none;border-top:1px solid currentColor;margin:6px 0 6px 0;&quot;/&gt;&lt;div style=&quot;text-align:center;&quot;&gt;Image multi-frequency Stokes I,V products&lt;/div&gt;&lt;/div&gt;" vertex="1">
+          <mxGeometry height="65" width="180" x="1317" y="1365" as="geometry" />
+        </mxCell>
+        <mxCell id="YpNpLiLtAerdsc_-_weu-145" edge="1" parent="1" source="YpNpLiLtAerdsc_-_weu-112" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=1.5;" value="">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1275" y="1375" />
+              <mxPoint x="1275" y="1410" />
+            </Array>
+            <mxPoint x="1226" y="1390" as="sourcePoint" />
+            <mxPoint x="1316" y="1409.947368421053" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="10-qEe_ywi0LsIOAkReH-3" edge="1" parent="1" source="YpNpLiLtAerdsc_-_weu-109" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=1.5;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" target="YpNpLiLtAerdsc_-_weu-111" value="">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1770" y="1136" />
+              <mxPoint x="1770" y="1270" />
+              <mxPoint x="890" y="1270" />
+              <mxPoint x="890" y="1340" />
+            </Array>
+            <mxPoint x="1884" y="1040" as="sourcePoint" />
+            <mxPoint x="980" y="1168" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

@@ -1,0 +1,71 @@
+---
+config:
+  layout: dagre
+---
+graph TD
+ subgraph INPUT["DATA DISCOVERY"]
+        direction LR
+        SLOW["Slow-data tree<br>`/lustre/pipeline/slow/.../*.ms`"]
+        SCAN["<b>scan trigger band</b><br>----------------<br>Poll `55MHz` every 5 s and identify UTC timestamps"]
+        READY["<b>ready check</b><br>----------------<br>Queue a timestamp when enough bands are present"]
+        SLOW --> SCAN
+        SCAN --> READY
+  end
+ subgraph ORCH["ORCHESTRATOR"]
+        direction LR
+        QUEUE["Task queue<br>bounded FIFO of UTC timestamps"]
+        DISPATCH["<b>dispatch control</b><br>----------------<br>Release work only when the queue is deep enough"]
+        STAGGER["<b>stagger launch</b><br>----------------<br>When multiple workers are idle, dispatch at most one task every 15 s"]
+        READY --> QUEUE
+        QUEUE --> DISPATCH
+        DISPATCH --> STAGGER
+  end
+ subgraph WORKERS["WORKER POOL"]
+        direction LR
+        W1["Worker 1<br>copy -> process -> publish -> cleanup"]
+        W2["Worker 2<br>copy -> process -> publish -> cleanup"]
+        WN["Worker N<br>copy -> process -> publish -> cleanup"]
+        STAGGER --> W1
+        STAGGER --> W2
+        STAGGER --> WN
+  end
+ subgraph PIPE["PER-WORKER PIPELINE"]
+        direction LR
+        COPY["<b>copy inputs</b><br>----------------<br>Copy all available bands into worker-local temporary storage"]
+        PROC["<b>fullband processing</b><br>----------------<br>Calibration, flagging, TTCalSun, source removal, imaging, helio conversion, combine"]
+        PUB["<b>publish products</b><br>----------------<br>Write MFS/FCH FITS and HDF products, quicklook figures, and logs"]
+        CLEAN["<b>cleanup</b><br>----------------<br>Remove successful temporary work directories"]
+        W1 --> COPY
+        W2 --> COPY
+        WN --> COPY
+        COPY --> PROC
+        PROC --> PUB
+        PUB --> CLEAN
+  end
+ subgraph OUTPUT["OUTPUTS AND FEEDBACK"]
+        direction LR
+        PROD["Published outputs<br>`proc_out/mfs`, `proc_out/fch`, `proc_out/fig`, `proc_out/log`"]
+        STATE["Manager state<br>queue depth, running, done, failed"]
+        PUB --> PROD
+        CLEAN --> STATE
+        STATE --> SCAN
+  end
+
+     SLOW:::element
+     QUEUE:::queue
+     W1:::queue
+     W2:::queue
+     WN:::queue
+     PROD:::element
+     STATE:::element
+     SCAN:::step
+     READY:::step
+     DISPATCH:::step
+     STAGGER:::step
+     COPY:::step
+     PROC:::step
+     PUB:::step
+     CLEAN:::step
+    classDef element fill:#eef2ff,stroke:#818cf8,stroke-width:1.5px,color:#1e1b4b
+    classDef step fill:#fff7ed,stroke:#fb923c,stroke-width:1.5px,color:#78350f
+    classDef queue fill:#ecfeff,stroke:#06b6d4,stroke-width:1.5px,color:#164e63
