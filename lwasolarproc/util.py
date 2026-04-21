@@ -44,6 +44,66 @@ def _normalize_bands(bands: Optional[Iterable[str]]) -> List[str]:
     return normalized
 
 
+def _ovro_lwa_location():
+    from astropy import units as u
+    from astropy.coordinates import EarthLocation
+
+    return EarthLocation(lat=37.23977727 * u.deg, lon=-118.2816667 * u.deg, height=1183 * u.m)
+
+
+def get_ovro_solar_elevation_deg(
+    times: Union[str, datetime, Iterable[Union[str, datetime]]],
+    *,
+    timestamp_format: str = "%Y%m%d_%H%M%S",
+):
+    """
+    Return Sun elevation in degrees at OVRO-LWA for one or more UTC times.
+
+    String inputs are parsed with ``timestamp_format``. Iterable inputs are
+    handled in one vectorized astropy transform so callers can efficiently
+    filter many timestamps at once.
+    """
+    import numpy as np
+    from astropy import units as u
+    from astropy.coordinates import AltAz, get_sun
+    from astropy.time import Time
+
+    is_scalar = isinstance(times, (str, datetime))
+    if is_scalar:
+        raw_times = [times]
+    else:
+        raw_times = list(times)
+
+    parsed = [
+        datetime.strptime(value, timestamp_format) if isinstance(value, str) else value
+        for value in raw_times
+    ]
+    obstime = Time(parsed)
+    altaz = get_sun(obstime).transform_to(AltAz(obstime=obstime, location=_ovro_lwa_location()))
+    elevations = np.asarray(altaz.alt.to_value(u.deg), dtype=float)
+    if is_scalar:
+        return float(elevations[0])
+    return elevations
+
+
+def filter_ovro_timestamps_by_solar_elevation(
+    timestamps: Iterable[str],
+    *,
+    min_elevation_deg: float,
+    timestamp_format: str = "%Y%m%d_%H%M%S",
+) -> list[str]:
+    """Return timestamps whose Sun elevation at OVRO-LWA is at least ``min_elevation_deg``."""
+    ordered = list(timestamps)
+    if not ordered:
+        return []
+    elevations = get_ovro_solar_elevation_deg(ordered, timestamp_format=timestamp_format)
+    return [
+        timestamp
+        for timestamp, elevation in zip(ordered, elevations, strict=False)
+        if float(elevation) >= float(min_elevation_deg)
+    ]
+
+
 def copy_data_from_datetime_str(
     datetime_str: str,
     dst: Union[str, Path] = "./",

@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Mapping, Sequence
 
 from .preprocessing_and_imaging import PipelineConfig, collect_caltables, process_fullband
-from .util import compress_fits_to_h5
+from .util import compress_fits_to_h5, filter_ovro_timestamps_by_solar_elevation
 
 
 PRODUCTION_BANDS = [
@@ -375,8 +375,10 @@ class RealtimeManager:
         self.queue_length = args.queue_length
         self.dispatch_min_queue = args.dispatch_min_queue
         self.dispatch_stagger_s = args.dispatch_stagger_s
+        self.el_valid = args.el_valid
         self.scan_interval = args.scan_interval
         self.scan_lookback_hours = args.scan_lookback_hours
+        self.start_timestamp = args.start_timestamp
         self.workers = args.workers
         self.pipeline_jobs = args.pipeline_jobs
         self.threads = args.threads
@@ -412,7 +414,20 @@ class RealtimeManager:
             logging.debug("Queue already full; skipping scan")
             return
         queued_this_scan = 0
-        for timestamp in discover_trigger_timestamps(self.slow_root, self.trigger_band, self.scan_lookback_hours):
+        discovered = discover_trigger_timestamps(self.slow_root, self.trigger_band, self.scan_lookback_hours)
+        if self.start_timestamp is not None:
+            discovered = [timestamp for timestamp in discovered if timestamp >= self.start_timestamp]
+        before_elevation = len(discovered)
+        discovered = filter_ovro_timestamps_by_solar_elevation(discovered, min_elevation_deg=self.el_valid)
+        skipped_elevation = before_elevation - len(discovered)
+        if skipped_elevation > 0:
+            logging.info(
+                "Skipped %d timestamp(s) with Sun elevation below %.1f deg at OVRO",
+                skipped_elevation,
+                self.el_valid,
+            )
+
+        for timestamp in discovered:
             if timestamp in self.queued or timestamp in self.running or timestamp in self.done or timestamp in self.failed:
                 continue
             available = available_band_paths(self.slow_root, self.bands, timestamp)
@@ -602,9 +617,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=15.0,
         help="Minimum seconds between dispatches when more than one worker is idle.",
     )
+    parser.add_argument("--el-valid", type=float, default=12.0, help="Queue only when Sun elevation at OVRO is at least this many degrees.")
     parser.add_argument("--ready-min-bands", type=int, default=7)
     parser.add_argument("--scan-interval", type=float, default=5.0)
     parser.add_argument("--scan-lookback-hours", type=int, default=1)
+    parser.add_argument("--start-timestamp", help="Only consider timestamps at or after YYYYMMDD_HHMMSS.")
     parser.add_argument("--pipeline-jobs", type=int, default=13)
     parser.add_argument("--threads", type=int, default=18)
     parser.add_argument("--cleanup-failed", action="store_true")
@@ -622,8 +639,12 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--dispatch-min-queue must be at least 1")
     if args.dispatch_stagger_s < 0:
         raise ValueError("--dispatch-stagger-s must be non-negative")
+    if not (-90.0 <= args.el_valid <= 90.0):
+        raise ValueError("--el-valid must be between -90 and 90 degrees")
     if args.ready_min_bands < 1:
         raise ValueError("--ready-min-bands must be at least 1")
+    if args.start_timestamp is not None:
+        parse_timestamp(args.start_timestamp)
     bands = parse_bands(args.bands)
     if args.trigger_band not in bands:
         raise ValueError("--trigger-band must be included in --bands")

@@ -121,6 +121,8 @@ lwasolarproc-realtime \
 
 The manager watches the UTC slow-data tree through the `55MHz` trigger band, queues a timestamp when more than six configured production bands are visible, and dispatches work to worker slots once at least `--dispatch-min-queue` tasks are queued. Each worker copies all available bands at job start, runs the fullband pipeline, publishes FITS/HDF/PNG products under `proc_out/mfs`, `proc_out/fch`, and `proc_out/fig`, writes logs under `proc_out/log`, and removes successful temporary work under `proc_tmp/worker_i/YYYYMMDD_HHMMSS`.
 
+Queue admission also applies a solar-elevation gate at OVRO. By default `--el-valid 12` means a timestamp is queued only when the solar elevation is at least `12 deg`. This prevents the realtime pipeline from wasting work on low-elevation frames that tend to produce empty or poor-quality solar images.
+
 By default the realtime figure outputs now include both:
 
 - `ovro-lwa-352.lev1.5_mfs_10s.YYYY-MM-DDTHHMMSSZ.image_I.png`
@@ -136,6 +138,7 @@ Current realtime defaults:
 - queue length: `8`
 - dispatch threshold: `3`
 - dispatch stagger: `15 s`
+- solar elevation gate: `12 deg`
 - ready threshold: `7` visible bands
 - scan interval: `5 s`
 - pipeline jobs: `13`
@@ -155,7 +158,9 @@ lwasolarproc-realtime \
   --queue-length 26 \
   --dispatch-min-queue 3 \
   --dispatch-stagger-s 15 \
+  --el-valid 12 \
   --scan-lookback-hours 6 \
+  --start-timestamp 20260420_162000 \
   --once
 ```
 
@@ -165,6 +170,12 @@ Important queue behavior in `--once` mode:
 - If the remaining queue length drops below `--dispatch-min-queue`, the manager exits after current workers finish.
 - Example: queue length `26` with `--dispatch-min-queue 3` typically processes `24` tasks and leaves the last `2` queued but undispatched.
 - Use `--dispatch-min-queue 1` when you want a bounded `--once` run to drain the full queue.
+
+Important queue filters:
+
+- `--start-timestamp YYYYMMDD_HHMMSS` ignores earlier trigger-band timestamps during a bounded replay.
+- `--el-valid` filters timestamps by local OVRO solar elevation before the band-count ready check.
+- The elevation filter is vectorized in `lwasolarproc.util.get_ovro_solar_elevation_deg()` so queue scans can cheaply evaluate many timestamps at once.
 
 Realtime worker logs:
 
@@ -356,6 +367,57 @@ Observed result before the bounded run was stopped:
 
 This 2026-04-21 live run was much slower than the 2026-04-20 benchmark because the first-wave workers spent most of their wall time in live copy/setup on Lustre before the pipeline stage. The run still confirmed that the realtime default now carries the new MFS `V/I` quicklook all the way through worker post-processing and publication.
 
+#### 2026-04-21 bounded 26-task live test with solar-elevation gating
+
+Path:
+
+```text
+/fast/rtpipe/proc_realtime_elvalid_1620_20260421
+```
+
+Run window:
+
+- start: `2026-04-21T15:07:23Z`
+- stop: `2026-04-21T15:19:49Z`
+
+Configuration:
+
+- workers: `5`
+- queue length: `26`
+- dispatch threshold: `3`
+- dispatch stagger: `15 s`
+- elevation gate: `12 deg`
+- bounded replay start: `20260420_162000`
+- output figures: default MFS `I` and `V/I`
+
+Observed result:
+
+- skipped before queueing: `3346` timestamps with Sun elevation below `12 deg` at OVRO
+- first queued timestamp: `20260420_162004`
+- completed: `24`
+- failed: `0`
+- the last `2` queued timestamps were not dispatched because the remaining queue dropped below `dispatch-min-queue`
+- total wall time: `746 s`
+- overall throughput: `24 / 746 = 0.0322 frames/s`
+- overall cadence: about `31.08 s/frame`
+
+Published products:
+
+- `24` MFS `I` PNG quicklooks
+- `24` MFS `V/I` PNG quicklooks
+- `24` per-run summary TSV files
+
+Manager per-frame wall statistics:
+
+| metric | value |
+|---|---:|
+| mean | 131.58 s |
+| median | 131.69 s |
+| min | 120.83 s |
+| max | 145.32 s |
+
+This run fixed the earlier empty-image replay problem by adding the OVRO solar-elevation queue gate. The replay now starts from a scientifically valid local-Sun elevation instead of blindly queueing low-elevation timestamps from the trigger band.
+
 ## Python API
 
 FITS/HDF5 round trip:
@@ -381,6 +443,21 @@ from lwasolarproc.visualization import slow_pipeline_default_plot
 
 fig, axes = slow_pipeline_default_plot("image_I.fits", add_logo=False)
 fig.savefig("image_I.quicklook.png", dpi=150, bbox_inches="tight")
+```
+
+Polarization quicklook:
+
+```python
+import matplotlib
+matplotlib.use("Agg")
+from lwasolarproc.visualization import slow_pipeline_default_polarization_plot
+
+fig, axes = slow_pipeline_default_polarization_plot(
+    "combined_mfs_I.fits",
+    "combined_mfs_V.fits",
+    add_logo=False,
+)
+fig.savefig("combined_mfs_VI.quicklook.png", dpi=150, bbox_inches="tight")
 ```
 
 Full-band processing from Python:
