@@ -63,7 +63,7 @@ The command wraps the full-band workflow:
 8. average by 4 channels again
 9. image MFS Stokes I/V and fine-channel Stokes I with WSClean
 10. convert J2000 FITS products to helioprojective coordinates with beam/K correction
-11. combine FITS products and write the default MFS Stokes I quicklook plot
+11. combine FITS products and write the default MFS Stokes I and MFS V/I quicklook plots
 
 ## Pipeline Workflow
 
@@ -105,7 +105,7 @@ Use `--no-bright-source-removal` to run the older path without source-list subtr
 
 Current default WSClean imaging settings use `-quiet`, `-j 18`, `-mem 8`, `-size 384 384`, `-scale 1.5arcmin`, `-weight briggs -0.5`, `-minuv-l 10`, `-auto-threshold 3`, `-niter 10000`, `-mgain 0.8`, `-beam-fitting-size 2`, `-no-reorder`, `-no-update-model-required`, and `-no-dirty`.
 
-The 2026-04-19 bright-source fullband benchmark at `/fast/rtpipe/tests/_lwasolarproc_fullband_bright_source_20260419` completed `13/13` bands in `66.97 s` wall time. The per-band average was `56.81 s`, including `21.76 s` for bright source removal, and produced combined MFS I, MFS V, and fine-channel I FITS files plus the default MFS I plot.
+The 2026-04-19 bright-source fullband benchmark at `/fast/rtpipe/tests/_lwasolarproc_fullband_bright_source_20260419` completed `13/13` bands in `66.97 s` wall time. The per-band average was `56.81 s`, including `21.76 s` for bright source removal, and produced combined MFS I, MFS V, and fine-channel I FITS files plus the default MFS I and MFS V/I plots.
 
 ## Realtime Task Manager
 
@@ -120,6 +120,13 @@ lwasolarproc-realtime \
 ```
 
 The manager watches the UTC slow-data tree through the `55MHz` trigger band, queues a timestamp when more than six configured production bands are visible, and dispatches work to worker slots once at least `--dispatch-min-queue` tasks are queued. Each worker copies all available bands at job start, runs the fullband pipeline, publishes FITS/HDF/PNG products under `proc_out/mfs`, `proc_out/fch`, and `proc_out/fig`, writes logs under `proc_out/log`, and removes successful temporary work under `proc_tmp/worker_i/YYYYMMDD_HHMMSS`.
+
+By default the realtime figure outputs now include both:
+
+- `ovro-lwa-352.lev1.5_mfs_10s.YYYY-MM-DDTHHMMSSZ.image_I.png`
+- `ovro-lwa-352.lev1.5_mfs_10s.YYYY-MM-DDTHHMMSSZ.image_VI.png`
+
+The `image_VI.png` quicklook uses the same 12-panel layout as the MFS I figure, plots Stokes `V/I`, applies a fixed `[-0.25, 0.25]` color scale in every panel, and masks pixels where the corresponding Stokes `I` map is below `5 sigma`, with `sigma` measured from the lower-right `56 x 56` pixel corner of each channel image.
 
 Current realtime defaults:
 
@@ -311,6 +318,43 @@ Interpretation:
 - worst cases were about `67-76 s`
 
 If exact copy benchmarking is needed, add an explicit timer around `copy_available_ms_inputs()` in `lwasolarproc/realtime_task_manage.py`.
+
+#### 2026-04-21 bounded 26-task live test with V/I quicklook publishing
+
+Path:
+
+```text
+/fast/rtpipe/proc_realtime_vi_20260421
+```
+
+Configuration:
+
+- workers: `5`
+- queue length: `26`
+- dispatch threshold: `3`
+- dispatch stagger: `15 s`
+- output figures: default MFS `I` and `V/I`
+
+Observed result before the bounded run was stopped:
+
+- queued: `26`
+- completed and published: `10`
+- each completed frame published both:
+  - `...image_I.png`
+  - `...image_VI.png`
+- observed completed-frame wall times included:
+  - `894.89 s`
+  - `1028.18 s`
+  - `1056.32 s`
+  - `1118.31 s`
+  - `1147.48 s`
+  - `665.06 s`
+  - `484.03 s`
+  - `471.94 s`
+  - `400.72 s`
+  - `395.20 s`
+
+This 2026-04-21 live run was much slower than the 2026-04-20 benchmark because the first-wave workers spent most of their wall time in live copy/setup on Lustre before the pipeline stage. The run still confirmed that the realtime default now carries the new MFS `V/I` quicklook all the way through worker post-processing and publication.
 
 ## Python API
 

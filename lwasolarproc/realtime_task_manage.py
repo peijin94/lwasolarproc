@@ -230,6 +230,7 @@ def realtime_output_paths(proc_out: Path, timestamp: str) -> dict[str, Path]:
         "fch_i_fits": proc_out / "fch" / f"{prefix}_fch_10s.{stamp}.image_I.fits",
         "fch_i_hdf": proc_out / "fch" / f"{prefix}_fch_10s.{stamp}.image_I.hdf",
         "mfs_i_png": proc_out / "fig" / f"{prefix}_mfs_10s.{stamp}.image_I.png",
+        "mfs_vi_png": proc_out / "fig" / f"{prefix}_mfs_10s.{stamp}.image_VI.png",
     }
 
 
@@ -257,6 +258,7 @@ def publish_outputs(task_dir: Path, proc_out: Path, timestamp: str) -> tuple[str
         "mfs_v_fits": combined_dir / "combined_mfs_V.fits",
         "fch_i_fits": combined_dir / "combined_fch_I.fits",
         "mfs_i_png": combined_dir / "combined_mfs_I.default_plot.png",
+        "mfs_vi_png": combined_dir / "combined_mfs_VI.default_plot.png",
     }
     missing = [str(path) for path in source_products.values() if not path.exists()]
     if missing:
@@ -271,6 +273,7 @@ def publish_outputs(task_dir: Path, proc_out: Path, timestamp: str) -> tuple[str
     published.append(atomic_copy(source_products["fch_i_fits"], outputs["fch_i_fits"]))
     published.append(atomic_compress_fits(outputs["fch_i_fits"], outputs["fch_i_hdf"]))
     published.append(atomic_copy(source_products["mfs_i_png"], outputs["mfs_i_png"]))
+    published.append(atomic_copy(source_products["mfs_vi_png"], outputs["mfs_vi_png"]))
     summary_path = run_dir / "preprocessing_and_imaging_summary.tsv"
     if summary_path.exists():
         published.append(atomic_copy(summary_path, proc_out / "log" / f"{timestamp}.summary.tsv"))

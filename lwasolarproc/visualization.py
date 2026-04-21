@@ -166,7 +166,15 @@ def _image_extent_arcsec(header, image: np.ndarray) -> list[float]:
     return [float(x0), float(x1), float(y0), float(y1)]
 
 
-def _plot_solar_limb(ax, solar_map, header) -> None:
+def _plot_solar_limb(
+    ax,
+    solar_map,
+    header,
+    color: str = "w",
+    alpha: float = 0.5,
+    lw: float = 1.2,
+    linestyle: str = "-",
+) -> None:
     radius = _header_get(header, "RSUN_OBS")
     if radius is None:
         try:
@@ -174,7 +182,7 @@ def _plot_solar_limb(ax, solar_map, header) -> None:
         except Exception:
             radius = None
     if radius is not None and np.isfinite(float(radius)):
-        ax.add_patch(Circle((0.0, 0.0), float(radius), fc="none", ec="w", lw=1.2, alpha=0.5))
+        ax.add_patch(Circle((0.0, 0.0), float(radius), fc="none", ec=color, lw=lw, alpha=alpha, ls=linestyle))
 
 
 def _available_cmap(preferred: str, fallback: str = "afmhot"):
@@ -182,6 +190,14 @@ def _available_cmap(preferred: str, fallback: str = "afmhot"):
         return plt.get_cmap(preferred)
     except ValueError:
         return plt.get_cmap(fallback)
+
+
+def _copy_cmap_with_bad(cmap_name: str, bad_color: str = "black"):
+    cmap = plt.get_cmap(cmap_name)
+    if hasattr(cmap, "copy"):
+        cmap = cmap.copy()
+    cmap.set_bad(bad_color)
+    return cmap
 
 
 def _logo_image(logo_string: str) -> np.ndarray:
@@ -208,6 +224,15 @@ def _hide_wcs_axis_labels(ax, panel_index: int) -> None:
     if panel_index not in [0, 4, 8]:
         ax.coords[1].set_ticklabel_visible(False)
         ax.coords[1].set_ticks_visible(False)
+
+
+def _corner_noise_sigma(image: np.ndarray, corner_size: int = 56) -> float:
+    size_y = min(int(corner_size), image.shape[0])
+    size_x = min(int(corner_size), image.shape[1])
+    corner = np.asarray(image[-size_y:, -size_x:], dtype=float)
+    if corner.size == 0:
+        return float("nan")
+    return float(np.nanstd(corner))
 
 
 def slow_pipeline_default_plot(
@@ -293,7 +318,7 @@ def slow_pipeline_default_plot(
                 vmax=vmaxplt,
                 interpolation=interpolation,
             )
-            _plot_solar_limb(ax, solar_map, channel_header)
+            _plot_solar_limb(ax, solar_map, channel_header, color="k", alpha=1.0, lw=1.6, linestyle=(0, (1.0, 2.2)))
             _set_solar_axes_fov(ax, fov, x_shift=x_shift, y_shift=y_shift)
 
             bmaj = _safe_channel(meta, "bmaj", bd, 0.0)
@@ -346,6 +371,141 @@ def slow_pipeline_default_plot(
 
     suffix = "[refraction corrected]" if rfrcor else "[original]"
     fig.suptitle(f"OVRO-LWA {str(date_obs)[:19]} {suffix}", fontsize=12)
+    if add_logo:
+        _add_default_logos(fig)
+    return fig, axes
+
+
+def slow_pipeline_default_polarization_plot(
+    i_fname,
+    v_fname,
+    freqs_plt: Sequence[float] = (34.1, 38.7, 43.2, 47.8, 52.4, 57.0, 61.6, 66.2, 70.8, 75.4, 80.0, 84.5),
+    fov: float = 7998,
+    add_logo: bool = True,
+    interpolation: str = "bicubic",
+    apply_refraction_param: bool = False,
+    ratio_vmin: float = -0.25,
+    ratio_vmax: float = 0.25,
+    mask_sigma: float = 5.0,
+    mask_corner_size: int = 56,
+    badants_arr=None,
+):
+    """Plot a 12-panel Stokes ``V/I`` quicklook using the slow-pipeline layout."""
+    from . import ndfits
+
+    meta_i, i_data = ndfits.read(i_fname)
+    meta_v, v_data = ndfits.read(v_fname)
+
+    header = meta_i.get("header", {})
+    date_obs = _header_get(header, "DATE-OBS", "")
+    rfrcor = bool(_header_get(header, "REFCOR", False) or _header_get(header, "rfrcor", False))
+
+    freqs_i_mhz = np.asarray(meta_i["ref_cfreqs"], dtype=float) / 1e6
+    freqs_v_mhz = np.asarray(meta_v["ref_cfreqs"], dtype=float) / 1e6
+    if freqs_i_mhz.shape != freqs_v_mhz.shape or not np.allclose(freqs_i_mhz, freqs_v_mhz, atol=1e-3):
+        raise ValueError("I and V FITS cubes must share the same frequency axis for V/I plotting")
+
+    do_badants_label = badants_arr is not None and len(badants_arr) == len(freqs_i_mhz)
+    badants_arr = np.asarray(badants_arr) if do_badants_label else None
+
+    fig = plt.figure(figsize=(8, 6.5))
+    gs = gridspec.GridSpec(3, 4, left=0.07, right=0.98, top=0.94, bottom=0.10, wspace=0.02, hspace=0.02)
+    ratio_cmap = _copy_cmap_with_bad("RdBu_r", bad_color="white")
+
+    axes = []
+    for i in range(12):
+        ax = fig.add_subplot(gs[i])
+        ax.set_facecolor("white")
+        freq_plt = freqs_plt[i]
+        ax.text(0.02, 0.98, f"{freq_plt:.0f} MHz", color="k", ha="left", va="top", fontsize=11, transform=ax.transAxes)
+        ax.set_xlabel("Solar X [arcsec]")
+        ax.set_ylabel("Solar Y [arcsec]")
+        plt.setp(ax.yaxis.get_majorticklabels(), rotation=90, ha="center", va="center", rotation_mode="anchor")
+
+        if np.min(np.abs(freqs_i_mhz - freq_plt)) < 2.0:
+            bd = int(np.argmin(np.abs(freqs_i_mhz - freq_plt)))
+            image_i = _channel_image(i_data, bd)
+            image_v = _channel_image(v_data, bd)
+            sigma_i = _corner_noise_sigma(image_i, corner_size=mask_corner_size)
+
+            valid = np.isfinite(image_i) & np.isfinite(image_v) & (image_i != 0)
+            ratio = np.full(image_i.shape, np.nan, dtype=float)
+            np.divide(image_v, image_i, out=ratio, where=valid)
+            if np.isfinite(sigma_i) and sigma_i > 0:
+                ratio[image_i < mask_sigma * sigma_i] = np.nan
+
+            channel_header = _channel_header(header, freqs_i_mhz[bd] * 1e6)
+            solar_map = smap.Map(ratio, channel_header)
+
+            if apply_refraction_param and not rfrcor:
+                x_shift = _safe_channel(meta_i, "refra_shift_x", bd, 0.0)
+                y_shift = _safe_channel(meta_i, "refra_shift_y", bd, 0.0)
+            else:
+                x_shift = 0.0
+                y_shift = 0.0
+
+            ax.imshow(
+                np.ma.masked_invalid(solar_map.data),
+                origin="lower",
+                extent=_image_extent_arcsec(channel_header, ratio),
+                cmap=ratio_cmap,
+                vmin=ratio_vmin,
+                vmax=ratio_vmax,
+                interpolation=interpolation,
+            )
+            _plot_solar_limb(ax, solar_map, channel_header, color="k", alpha=1.0, lw=1.4)
+            _set_solar_axes_fov(ax, fov, x_shift=x_shift, y_shift=y_shift)
+
+            bmaj = _safe_channel(meta_i, "bmaj", bd, 0.0)
+            bmin = _safe_channel(meta_i, "bmin", bd, 0.0)
+            bpa = _safe_channel(meta_i, "bpa", bd, 0.0)
+            if bmaj > 0 and bmin > 0:
+                beam = Ellipse(
+                    (-fov * 0.375, -fov * 0.375),
+                    bmaj * 3600,
+                    bmin * 3600,
+                    angle=-(90 - bpa),
+                    fc="none",
+                    lw=2,
+                    ec="k",
+                )
+                ax.add_artist(beam)
+            if do_badants_label:
+                ax.text(
+                    0.99,
+                    0.98,
+                    "$N_{ants}=$" + str(352 - badants_arr[bd]),
+                    color="k",
+                    ha="right",
+                    va="top",
+                    fontsize=10,
+                    transform=ax.transAxes,
+                )
+        else:
+            ax.text(0.5, 0.5, "No Data", color="k", ha="center", va="center", fontsize=18, transform=ax.transAxes)
+            _set_solar_axes_fov(ax, fov)
+
+        if i not in [8, 9, 10, 11]:
+            ax.set_xlabel("")
+            ax.get_xaxis().set_ticks([])
+        if i not in [0, 4, 8]:
+            ax.set_ylabel("")
+            ax.get_yaxis().set_ticks([])
+        if i == 11:
+            ax.text(
+                0.99,
+                0.02,
+                "[-0.25,0.25]",
+                color="k",
+                ha="right",
+                va="bottom",
+                fontsize=10,
+                transform=ax.transAxes,
+            )
+        axes.append(ax)
+
+    suffix = "[refraction corrected]" if rfrcor else "[original]"
+    fig.suptitle(f"OVRO-LWA {str(date_obs)[:19]} Stokes V/I {suffix}", fontsize=12)
     if add_logo:
         _add_default_logos(fig)
     return fig, axes

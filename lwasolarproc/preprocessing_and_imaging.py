@@ -122,6 +122,7 @@ class PipelineConfig:
     postprocess_beam_correction: bool = True
     postprocess_to_kelvin: bool = True
     plot_mfs_i: bool = True
+    plot_mfs_vi: bool = True
     plot_dpi: int = 150
     wsclean: WSCleanOptions = field(default_factory=WSCleanOptions)
 
@@ -845,8 +846,14 @@ def postprocess_fullband_products(config: PipelineConfig, results: Sequence[Band
         combined_path = convert_and_combine_fits(paths, label=label, output_dir=output_dir, config=config)
         if combined_path is not None:
             combined[label] = combined_path
-    write_combined_summary(output_dir, combined)
-    plot_mfs_i_default(config, combined)
+    plot_outputs: dict[str, Path] = {}
+    mfs_i_plot = plot_mfs_i_default(config, combined)
+    if mfs_i_plot is not None:
+        plot_outputs["mfs_I_plot"] = mfs_i_plot
+    mfs_vi_plot = plot_mfs_vi_default(config, combined)
+    if mfs_vi_plot is not None:
+        plot_outputs["mfs_VI_plot"] = mfs_vi_plot
+    write_combined_summary(output_dir, {**combined, **plot_outputs})
     return combined
 
 
@@ -873,6 +880,33 @@ def plot_mfs_i_default(config: PipelineConfig, combined: Mapping[str, Path]) -> 
     fig.savefig(plot_path, dpi=config.plot_dpi)
     plt.close(fig)
     print(f"[plot] mfs_I default plot={plot_path}")
+    return plot_path
+
+
+def plot_mfs_vi_default(config: PipelineConfig, combined: Mapping[str, Path]) -> Path | None:
+    if not config.plot_mfs_vi:
+        return None
+    mfs_i = combined.get("mfs_I")
+    mfs_v = combined.get("mfs_V")
+    if mfs_i is None or mfs_v is None:
+        print("[plot] skip mfs_VI: combined I/V FITS not found")
+        return None
+
+    import matplotlib  # type: ignore
+
+    matplotlib.use("Agg", force=True)
+    import matplotlib.pyplot as plt  # type: ignore
+
+    try:
+        from .visualization import slow_pipeline_default_polarization_plot
+    except ImportError:  # pragma: no cover - supports direct script execution.
+        from visualization import slow_pipeline_default_polarization_plot  # type: ignore
+
+    plot_path = mfs_v.with_name("combined_mfs_VI.default_plot.png")
+    fig, _ = slow_pipeline_default_polarization_plot(str(mfs_i), str(mfs_v))
+    fig.savefig(plot_path, dpi=config.plot_dpi)
+    plt.close(fig)
+    print(f"[plot] mfs_VI default plot={plot_path}")
     return plot_path
 
 
