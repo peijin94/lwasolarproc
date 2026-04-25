@@ -415,15 +415,24 @@ The manager scans the trigger-band tree:
 
 ```text
 /lustre/pipeline/slow/55MHz/YYYY-MM-DD/HH/*.ms
+/lustre/pipeline/slow/55MHz/YYYY-MM-DD/HH/*.ms.tar
 ```
 
 The trigger-band timestamps are parsed from filenames of the form:
 
 ```text
 YYYYMMDD_HHMMSS_55MHz.ms
+YYYYMMDD_HHMMSS_55MHz.ms.tar
 ```
 
 The scan window is limited by `--scan-lookback-hours`.
+
+For every configured production band, availability accepts either an unpacked Measurement Set directory or a tar archive:
+
+- `YYYYMMDD_HHMMSS_BAND.ms`
+- `YYYYMMDD_HHMMSS_BAND.ms.tar`
+
+Workers always stage inputs into `proc_tmp`. Unpacked `.ms` inputs are copied with `shutil.copytree()`. Archived `.ms.tar` inputs are copied into the worker `input_ms` directory first, then safely untarred there before pipeline discovery runs. The copied archive is removed after successful extraction so memdisk scratch does not keep both archive and extracted Measurement Set.
 
 ### Queue Admission Rules
 

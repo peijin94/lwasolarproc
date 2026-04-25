@@ -131,7 +131,7 @@ lwasolarproc-realtime \
   --proc-out ./proc_out
 ```
 
-The manager watches the UTC slow-data tree through the `55MHz` trigger band, queues a timestamp when more than six configured production bands are visible, and dispatches work to worker slots once at least `--dispatch-min-queue` tasks are queued. Each worker copies all available bands at job start, runs the fullband pipeline, publishes FITS/HDF/PNG products under `proc_out/mfs`, `proc_out/fch`, and `proc_out/fig`, writes logs under `proc_out/log`, and removes successful temporary work under `proc_tmp/worker_i/YYYYMMDD_HHMMSS`.
+The manager watches the UTC slow-data tree through the `55MHz` trigger band, queues a timestamp when more than six configured production bands are visible, and dispatches work to worker slots once at least `--dispatch-min-queue` tasks are queued. Slow-data inputs may be either unpacked `YYYYMMDD_HHMMSS_BAND.ms` directories or `YYYYMMDD_HHMMSS_BAND.ms.tar` archives. Each worker copies all available bands at job start; for `.ms.tar` inputs it first copies the archive into the worker scratch directory, then untars it there before running the fullband pipeline. Workers publish FITS/HDF/PNG products under `proc_out/mfs`, `proc_out/fch`, and `proc_out/fig`, write logs under `proc_out/log`, and remove successful temporary work under `proc_tmp/worker_i/YYYYMMDD_HHMMSS`.
 
 Queue admission also applies a solar-elevation gate at OVRO. By default `--el-valid 12` means a timestamp is queued only when the solar elevation is at least `12 deg`. This prevents the realtime pipeline from wasting work on low-elevation frames that tend to produce empty or poor-quality solar images.
 

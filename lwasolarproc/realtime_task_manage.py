@@ -10,6 +10,7 @@ import re
 import shutil
 import signal
 import sys
+import tarfile
 import time
 from collections import deque
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
@@ -38,7 +39,7 @@ PRODUCTION_BANDS = [
     "78MHz",
     "82MHz",
 ]
-TIMESTAMP_RE = re.compile(r"(?P<stamp>\d{8}_\d{6})_(?P<band>\d+MHz)\.ms$")
+TIMESTAMP_RE = re.compile(r"(?P<stamp>\d{8}_\d{6})_(?P<band>\d+MHz)\.ms(?:\.tar)?$")
 
 
 @dataclass(frozen=True)
@@ -149,6 +150,10 @@ def source_ms_path(slow_root: Path, band: str, timestamp: str) -> Path:
     return slow_root / band / dt.strftime("%Y-%m-%d") / dt.strftime("%H") / f"{timestamp}_{band}.ms"
 
 
+def source_ms_tar_path(slow_root: Path, band: str, timestamp: str) -> Path:
+    return source_ms_path(slow_root, band, timestamp).with_suffix(".ms.tar")
+
+
 def is_dir_safe(path: Path) -> bool:
     try:
         return path.is_dir()
@@ -157,11 +162,29 @@ def is_dir_safe(path: Path) -> bool:
         return False
 
 
+def is_file_safe(path: Path) -> bool:
+    try:
+        return path.is_file()
+    except OSError as exc:
+        logging.debug("Cannot stat file candidate %s: %s", path, exc)
+        return False
+
+
+def source_ms_input_path(slow_root: Path, band: str, timestamp: str) -> Path | None:
+    ms_path = source_ms_path(slow_root, band, timestamp)
+    if is_dir_safe(ms_path):
+        return ms_path
+    tar_path = source_ms_tar_path(slow_root, band, timestamp)
+    if is_file_safe(tar_path):
+        return tar_path
+    return None
+
+
 def available_band_paths(slow_root: Path, bands: Sequence[str], timestamp: str) -> dict[str, Path]:
     paths: dict[str, Path] = {}
     for band in bands:
-        path = source_ms_path(slow_root, band, timestamp)
-        if is_dir_safe(path):
+        path = source_ms_input_path(slow_root, band, timestamp)
+        if path is not None:
             paths[band] = path
     return paths
 
@@ -180,7 +203,7 @@ def trigger_hour_dirs(slow_root: Path, trigger_band: str, lookback_hours: int) -
 def discover_trigger_timestamps(slow_root: Path, trigger_band: str, lookback_hours: int) -> list[str]:
     stamps: set[str] = set()
     for hour_dir in trigger_hour_dirs(slow_root, trigger_band, lookback_hours):
-        for path in sorted(hour_dir.glob(f"*_{trigger_band}.ms")):
+        for path in sorted(hour_dir.glob(f"*_{trigger_band}.ms*")):
             stamp = timestamp_from_ms_name(path)
             if stamp is not None:
                 stamps.add(stamp)
@@ -244,10 +267,69 @@ def copy_available_ms_inputs(
     input_dir.mkdir(parents=True, exist_ok=True)
     copied: list[str] = []
     for band, src in sorted(available_band_paths(slow_root, bands, timestamp).items()):
-        dst = input_dir / src.name
-        shutil.copytree(src, dst)
+        copy_ms_input(src, input_dir)
         copied.append(band)
     return tuple(copied)
+
+
+def copy_ms_input(src: Path, input_dir: Path) -> Path:
+    if src.name.endswith(".ms.tar"):
+        return copy_and_extract_ms_tar(src, input_dir)
+    dst = input_dir / src.name
+    if dst.exists():
+        shutil.rmtree(dst)
+    shutil.copytree(src, dst)
+    return dst
+
+
+def copy_and_extract_ms_tar(src: Path, input_dir: Path) -> Path:
+    archive_dst = input_dir / src.name
+    expected_ms = input_dir / src.name.removesuffix(".tar")
+    extract_dir = input_dir / f".{src.name}.extract-{os.getpid()}"
+    if expected_ms.exists():
+        shutil.rmtree(expected_ms)
+    if archive_dst.exists():
+        archive_dst.unlink()
+    if extract_dir.exists():
+        shutil.rmtree(extract_dir)
+
+    shutil.copy2(src, archive_dst)
+    try:
+        extract_dir.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(archive_dst, "r") as tar:
+            safe_members = list(_safe_tar_members(tar, extract_dir))
+            tar.extractall(extract_dir, members=safe_members, filter="data")
+
+        extracted_expected = extract_dir / expected_ms.name
+        if extracted_expected.is_dir():
+            extracted_expected.rename(expected_ms)
+            return expected_ms
+
+        extracted = sorted(path for path in extract_dir.rglob("*.ms") if path.is_dir())
+        if len(extracted) == 1:
+            extracted[0].rename(expected_ms)
+            return expected_ms
+        raise FileNotFoundError(f"Archive did not extract a single Measurement Set directory: {src}")
+    finally:
+        archive_dst.unlink(missing_ok=True)
+        if extract_dir.exists():
+            shutil.rmtree(extract_dir)
+
+
+def _safe_tar_members(tar: tarfile.TarFile, destination: Path) -> Sequence[tarfile.TarInfo]:
+    destination = destination.resolve()
+    safe_members: list[tarfile.TarInfo] = []
+    for member in tar.getmembers():
+        if member.issym() or member.islnk() or member.isdev():
+            raise ValueError(f"Unsupported tar member type in {tar.name}: {member.name}")
+        member_path = Path(member.name)
+        if member_path.is_absolute() or ".." in member_path.parts:
+            raise ValueError(f"Unsafe tar member path in {tar.name}: {member.name}")
+        target = (destination / member.name).resolve()
+        if not str(target).startswith(str(destination) + os.sep) and target != destination:
+            raise ValueError(f"Tar member escapes destination in {tar.name}: {member.name}")
+        safe_members.append(member)
+    return safe_members
 
 
 def publish_outputs(task_dir: Path, proc_out: Path, timestamp: str) -> tuple[str, ...]:
