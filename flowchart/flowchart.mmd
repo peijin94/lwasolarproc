@@ -9,12 +9,12 @@ graph TD
         COPY["<b>Copy MS</b><br>----------------<br>Create one per-band working Measurement Set"]
         APPLYCAL["<b>applycal</b><br>----------------<br>Apply H5Parm bandpass calibration and write CORRECTED_DATA"]
         AOFLAG["<b>aoflagger</b><br>----------------<br>Flag RFI with bundled LWA_sun_PZ.lua strategy"]
-        AVG1["<b>avg4ch</b><br>----------------<br>Average four frequency channels before solar calibration"]
+        AVG1["<b>avg4ch</b><br>----------------<br>Average four frequency channels before phase selfcal"]
         CAL["Bandpass calibration tables<br>DP3 H5Parm per band"]
   end
  subgraph PEEL["PEEL"]
         direction LR
-        TTCAL["<b>TTCalSun</b><br>----------------<br>Run zest solar calibration on the first averaged MS"]
+        SELFCAL["<b>phase selfcal</b><br>----------------<br>Build a WSClean model, solve DP3 diagonal phase gains, and apply phase000"]
         SRCIMG["<b>source-list WSClean</b><br>----------------<br>Make temporary full-sky model and save component list"]
         SOURCES["WSClean sources.txt<br>all clean components"]
         MASK["<b>mask source list</b><br>----------------<br>Keep only components farther than the Sun exclusion radius"]
@@ -41,8 +41,8 @@ graph TD
     CAL --> APPLYCAL
     APPLYCAL --> AOFLAG
     AOFLAG --> AVG1
-    AVG1 --> TTCAL
-    TTCAL --> SRCIMG & SUBTRACT
+    AVG1 --> SELFCAL
+    SELFCAL --> SRCIMG & SUBTRACT
     SRCIMG --> SOURCES
     SOURCES --> MASK
     MASK --> FAR
@@ -63,7 +63,7 @@ graph TD
      AOFLAG:::step
      AVG1:::step
      CAL:::element
-     TTCAL:::step
+     SELFCAL:::step
      SRCIMG:::step
      SOURCES:::element
      MASK:::step

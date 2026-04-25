@@ -13,8 +13,7 @@ This document is the technical memory for the current `lwasolarproc` package sta
 
 The package is intentionally built without CASA runtime dependencies in the main path. It uses:
 
-- `DP3` for applycal, AOFlagger, averaging, and source subtraction
-- `TTCalSun` for solar calibration
+- `DP3` for applycal, AOFlagger, averaging, phase selfcal, and source subtraction
 - `WSClean` for imaging and source-list generation
 - `astropy`, `sunpy`, `reproject`, and `scikit-image` for FITS coordinate conversion and visualization
 - `h5py` for HDF5 export
@@ -88,15 +87,11 @@ The package assumes several external executables are available in the active env
 
 - `DP3`
 - `wsclean`
-- `TTCalSun/bin/ttcalsun_cpu.sh`
 - `chgcentre`
 
 The current defaults in package code are conservative and tuned to the benchmarked environment rather than being generic discovery logic. For example:
 
 - `DP3` default binary: `/opt/dp3-6.5.1/bin/DP3`
-- TTCalSun default binary:
-  - `/fast/rtpipe/TTCalSun/bin/ttcalsun_cpu.sh`
-  - with fallback under the repo-local `TTCalSun` checkout if present
 
 The package avoids `casatasks`, `casatools`, and `suncasa` in the normal runtime path. `python-casacore` is only optional and used for paths that inspect Measurement Set tables directly.
 
@@ -125,7 +120,7 @@ The current packaged full-band path is:
 2. run DP3 `applycal` from H5Parm into `CORRECTED_DATA`
 3. run DP3 AOFlagger using bundled `LWA_sun_PZ.lua`
 4. average by `avg_chanbin=4`
-5. run `TTCalSun` in `zest` mode
+5. run phase-only selfcal from WSClean model visibilities using DP3 `gaincal`
 6. perform bright-source removal outside the solar exclusion radius
 7. shift phase center to the Sun
 8. average by `avg_chanbin=4` again
@@ -149,10 +144,16 @@ The central configuration object is `PipelineConfig`.
 
 Important defaults:
 
-- `mode="zest"`
-- `beam="lwa178"`
 - `threads=18`
 - `avg_chanbin=4`
+- `run_phase_selfcal=True`
+- `selfcal_caltype="diagonalphase"`
+- `selfcal_uvlambdamin=30`
+- `selfcal_maxiter=500`
+- `selfcal_tolerance=1e-5`
+- `selfcal_image_size=4096`
+- `selfcal_scale="2arcmin"`
+- `selfcal_niter=800`
 - `run_bright_source_removal=True`
 - `bright_source_min_distance_deg=6.0`
 - `mfs_pols="I,V"`
@@ -205,7 +206,24 @@ This was changed specifically to reduce stdout volume and avoid unnecessary stat
 - `avg.type=averager`
 - `avg.freqstep=4`
 
-The pipeline currently averages once before TTCalSun and again after Sun centering.
+The pipeline currently averages once before phase selfcal and again after Sun centering.
+
+### Phase Selfcal
+
+The phase selfcal stage follows the working quick-processing pattern:
+
+1. run a temporary full-sky WSClean model on the first averaged MS
+2. solve a DP3 H5Parm with `gaincal.caltype=diagonalphase`
+3. use `gaincal.usemodelcolumn=true` and `gaincal.modelcolumn=MODEL_DATA`
+4. apply only `phase000` to a new selfcal MS with DP3 `applycal`
+
+The default selfcal WSClean pass uses frequency-dependent auto image geometry for the temporary model image. The current model auto-geometry defaults are:
+
+- effective telescope size: `2500 m`
+- pixel scale factor: `2.2`
+- model field of view: `182 deg`
+
+For the current production bands, this gives model-image sizes from about `1200 x 1200` at `23 MHz` to `4050 x 4050` at `82 MHz`. If model auto-geometry is disabled, the fallback selfcal model geometry is `4096 x 4096` with `2arcmin` pixels. The selfcal model pass also uses uniform weighting, `niter=800`, `mgain=0.9`, `horizon-mask=5deg`, `minuv-l=10`, and quiet/no-dirty/no-update-model-required flags. Temporary selfcal image products are deleted by default after the solution is applied.
 
 ### Bright-Source Subtraction
 
@@ -217,30 +235,13 @@ The pipeline currently averages once before TTCalSun and again after Sun centeri
 
 This is fed from a WSClean source list that has already been masked to exclude near-Sun components.
 
-## TTCalSun Stage
-
-TTCalSun is invoked by `build_ttcalsun_command()`.
-
-Current defaults:
-
-- mode: `zest`
-- `--maxiter=30`
-- `--tolerance=1e-4`
-- `--minuvw=30`
-- `--beam=lwa178`
-- `--peeliter=3`
-- `--phase-only-maxiter=0`
-- `--timings`
-
-The pipeline treats TTCalSun as a required calibration stage before bright-source removal and Sun centering.
-
 ## Bright Source Removal Design
 
 This is a key added capability relative to the earlier simpler packaged pipeline.
 
 The sequence is:
 
-1. run a temporary full-sky WSClean image on the averaged post-TTCalSun MS
+1. run a temporary full-sky WSClean image on the averaged post-selfcal MS
 2. request `-save-source-list`
 3. parse the generated `*-sources.txt`
 4. compute the solar apparent RA/Dec for the observation time
@@ -249,6 +250,8 @@ The sequence is:
 7. subtract those far components from the MS with DP3 predict-subtract
 
 The source-list logic lives in [source_list.py](/fast/rtpipe/lwasolarproc/lwasolarproc/source_list.py).
+
+The bright-source source-list WSClean pass uses the same model auto-geometry defaults as phase selfcal: `2500 m` effective telescope size, `2.2` pixel scale factor, and `182 deg` field of view. The fixed fallback geometry remains `4096 x 4096` with `2arcmin` pixels when model auto-geometry is disabled.
 
 Important functions:
 
@@ -266,7 +269,7 @@ WSClean command construction is centralized in [wsclean_helper.py](/fast/rtpipe/
 
 The package uses a `WSCleanOptions` dataclass rather than ad hoc shell string concatenation. This keeps command assembly predictable and makes defaults easy to inspect in Python.
 
-Current operational defaults:
+Current final solar imaging defaults:
 
 - `-quiet`
 - `-j 18`
@@ -295,6 +298,8 @@ Fine-channel imaging:
 - current package state does not use the earlier attempted deconvolution-channel split because it hurt performance
 
 The package currently favors low-stdout operation. `quiet=True` is wired through the WSClean options so worker logs stay useful and tool overhead stays low.
+
+Auto pixel/FOV geometry is deliberately restricted to the temporary model-imaging stages used by phase selfcal and bright-source source-list generation. The final small-FOV solar MFS/FCH products keep the fixed `384 x 384`, `1.5arcmin` geometry so the downstream helio cutout and combined FITS products remain stable.
 
 ## Coordinate Conversion and Beam Correction
 
@@ -372,19 +377,17 @@ The Stokes `I` plot:
 - overlays the solar limb and restoring beam
 - includes NJIT and Caltech logos embedded as base64 strings in the module
 
-### Default V/I Plot
+### Default Stokes V Plot
 
-The polarization plot is intentionally constrained:
+The polarization quicklook keeps the historical `image_VI.png` filename but currently plots Stokes `V` directly rather than a masked `V/I` ratio.
 
-- ratio image: `V / I`
-- fixed scale: `[-0.25, 0.25]`
-- mask threshold: `I < 5 sigma`
-- `sigma` estimated from the lower-right `56 x 56` pixel patch of each Stokes `I` panel
-- masked pixels shown as white
+Current behavior:
+
+- image: Stokes `V` in MK
+- color scale: symmetric around zero from the `99.99` percentile of `|V|`
+- per-panel annotation: `max|V|`
 - text, beam ellipse, and solar-radius circle rendered in black
 - the `1 R_sun` circle is black and dotted
-- per-panel `|V/I| max` text removed
-- only the last panel carries the `[-0.25,0.25]` text annotation
 
 This plot was added because the realtime system needs a fast, standardized polarization diagnostic that matches the default Stokes `I` layout closely enough to compare by eye.
 
@@ -590,11 +593,68 @@ Important lesson:
 
 - adding the solar-elevation queue gate fixed the earlier bounded replay failure mode where low-elevation frames could image as effectively empty solar products
 
+### 2026-04-24 20:00 UTC 18-frame memdisk replay
+
+Bounded replay path:
+
+- `/fast/rtpipe/proc_realtime_20260424_2000_18f_5w_memtmp`
+
+Settings:
+
+- `--start-timestamp 20260424_200004`
+- `--max-tasks 18`
+- `--workers 5`
+- `--dispatch-min-queue 3`
+- `--dispatch-stagger-s 15`
+- worker scratch: `/dev/shm/tmp_pipe_dir/proc_realtime_20260424_2000_18f_5w/proc_tmp`
+- output root: `/fast/rtpipe/proc_realtime_20260424_2000_18f_5w_memtmp/proc_out`
+- model auto geometry: `2500 m`, `2.2`, `182 deg`
+- final solar geometry: fixed `384 x 384`, `1.5arcmin`
+
+Observed result:
+
+- completed: `18`
+- failed: `0`
+- processed timestamps: `20260424_200004` through `20260424_200254`
+- total wall time: `595.67 s`
+- worker-frame mean: `126.43 s`
+- worker-frame min: `112.69 s`
+- worker-frame max: `147.63 s`
+- product counts:
+  - `mfs`: `72`
+  - `fch`: `36`
+  - `fig`: `36`
+  - all files: `199`
+
+Per-band mean timings over `234` band runs:
+
+- band elapsed: `60.73 s`
+- applycal: `1.93 s`
+- AOFlagger: `5.58 s`
+- avg before selfcal: `1.02 s`
+- phase selfcal: `8.49 s`
+- bright source removal: `12.56 s`
+- sun centering: `0.80 s`
+- avg after selfcal: `0.49 s`
+- WSClean MFS: `5.18 s`
+- WSClean FCH: `24.53 s`
+
+Direct copy benchmark from the same Lustre tree to `/dev/shm`:
+
+- `20260424_200004`: `1.52 s` for 13 bands
+- `20260424_200014`: `1.51 s` for 13 bands
+- `20260424_200024`: `1.49 s` for 13 bands
+- mean direct full-band copy time: `1.51 s`
+
+Important lesson:
+
+- the large worker residual outside the slowest per-band timer is not pure input copy; direct copy was only about `1.5 s` in this benchmark. The residual includes post-processing, HDF compression, publishing, plotting, cleanup, and manager/worker overhead.
+
 ## Known Gaps and Next Instrumentation Targets
 
 Current gaps:
 
-- no exact dedicated copy timer around `copy_available_ms_inputs()`
+- no exact dedicated copy timer around `copy_available_ms_inputs()` inside realtime worker logs
 - README benchmark tables are informative but not a substitute for a formal performance report
 - some module defaults are encoded in Python dataclasses rather than a runtime configuration file
 

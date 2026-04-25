@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import astropy.units as u
 from astropy.coordinates import EarthLocation, SkyCoord, get_body
 from astropy.time import Time
-
 
 def parse_wsclean_coordinates(ra_str: str, dec_str: str) -> SkyCoord:
     """Parse WSClean RA and DEC strings into a SkyCoord."""
@@ -64,20 +62,18 @@ def distance_to_src_list(sourcelist_fname: str | Path, ra_deg: float, dec_deg: f
 
 def get_time_mjd(msname: str | Path) -> float:
     """
-    Parse observation time from an MS filename.
+    Get the observation start time in MJD from an MS OBSERVATION table.
 
-    Expected stem format starts with ``YYYYMMDD_HHMMSS``.
+    This follows the original bright-source-removal helper in
+    ``lwa-quick-proc-image/source_list.py`` rather than inferring the time from
+    the filename.
     """
+    from casacore.tables import table  # type: ignore
 
-    stem = Path(msname).name
-    if stem.endswith(".ms"):
-        stem = stem[:-3]
-    parts = stem.split("_")
-    if len(parts) < 2:
-        raise ValueError(f"Cannot parse observation time from filename: {Path(msname).name}")
-
-    dt = datetime.strptime(f"{parts[0]}_{parts[1]}", "%Y%m%d_%H%M%S")
-    return float(Time(dt, scale="utc").mjd)
+    obs_table = Path(msname) / "OBSERVATION"
+    with table(str(obs_table), readonly=True, ack=False) as tb:
+        start_seconds = float(tb.getcol("TIME_RANGE")[0][0])
+    return start_seconds / 86400.0
 
 
 def get_sun_ra_dec(time_mjd: float, observatory: str = "OVRO") -> tuple[float, float]:

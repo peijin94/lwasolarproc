@@ -29,6 +29,11 @@ class WSCleanOptions:
     mem_percent: int = 8
     size: int = 384
     scale: str = "1.5arcmin"
+    auto_pix_fov: bool = False
+    auto_telescope_size_m: float = 2500.0
+    auto_im_fov_arcsec: float = 182.0 * 3600.0
+    auto_pix_scale_factor: float = 2.2
+    auto_min_size: int | None = None
     data_column: str = "DATA"
     pol: str = "I"
     weight: Sequence[str] = ("briggs", "-0.5")
@@ -81,9 +86,10 @@ def find_smallest_fftw_size(n: float) -> int:
 def auto_image_geometry(
     ms_path: str | Path,
     *,
-    telescope_size_m: float = 3200.0,
+    telescope_size_m: float = 2500.0,
     im_fov_arcsec: float = 182.0 * 3600.0,
-    pix_scale_factor: float = 1.5,
+    pix_scale_factor: float = 2.2,
+    min_size: int | None = None,
 ) -> tuple[int, str]:
     """
     Estimate an FFT-friendly image size and pixel scale from the MS frequency.
@@ -101,7 +107,10 @@ def auto_image_geometry(
     freq_hz = float(np.nanmedian(chan_freq))
     scale_arcsec = 1.22 * (3.0e8 / freq_hz) / telescope_size_m
     scale_arcsec = scale_arcsec * 180.0 / math.pi * 3600.0 / pix_scale_factor
-    size = find_smallest_fftw_size(im_fov_arcsec / scale_arcsec)
+    target_size = im_fov_arcsec / scale_arcsec
+    if min_size is not None:
+        target_size = max(float(min_size), target_size)
+    size = find_smallest_fftw_size(target_size)
     return size, f"{scale_arcsec / 60.0}arcmin"
 
 
@@ -135,17 +144,28 @@ def build_wsclean_command(
     """Build a WSClean command list without executing it."""
 
     opts = options or WSCleanOptions()
+    size = opts.size
+    scale = opts.scale
+    if opts.auto_pix_fov:
+        size, scale = auto_image_geometry(
+            ms_path,
+            telescope_size_m=opts.auto_telescope_size_m,
+            im_fov_arcsec=opts.auto_im_fov_arcsec,
+            pix_scale_factor=opts.auto_pix_scale_factor,
+            min_size=opts.auto_min_size,
+        )
+        LOGGER.info("Auto WSClean image geometry for %s: size=%s scale=%s", ms_path, size, scale)
+
     values: dict[str, object] = {
         "j": opts.threads,
         "mem": opts.mem_percent,
         "mgain": opts.mgain,
         "niter": opts.niter,
-        "auto_threshold": opts.auto_threshold,
         "weight": list(opts.weight),
         "horizon_mask": opts.horizon_mask,
         "pol": opts.pol,
-        "size": [opts.size, opts.size],
-        "scale": opts.scale,
+        "size": [size, size],
+        "scale": scale,
         "data_column": opts.data_column,
     }
     _set_option(values, "multiscale", opts.multiscale)
@@ -154,6 +174,7 @@ def build_wsclean_command(
         values["multiscale_max_scales"] = opts.multiscale_max_scales
     _set_option(values, "local_rms", opts.local_rms)
     _set_option(values, "auto_mask", opts.auto_mask)
+    _set_option(values, "auto_threshold", opts.auto_threshold)
     _set_option(values, "taper_inner_tukey", opts.taper_inner_tukey)
     _set_option(values, "field", opts.field)
     _set_option(values, "intervals_out", opts.intervals_out)

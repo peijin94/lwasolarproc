@@ -32,7 +32,7 @@ graph TD
  subgraph PIPE["PER-WORKER PIPELINE"]
         direction LR
         COPY["<b>copy inputs</b><br>----------------<br>Copy all available bands into worker-local temporary storage"]
-        PROC["<b>fullband processing</b><br>----------------<br>Calibration, flagging, TTCalSun, source removal, imaging, helio conversion, combine"]
+        PROC["<b>fullband processing</b><br>----------------<br>Calibration, flagging, phase selfcal, source removal, imaging, helio conversion, combine"]
         PUB["<b>publish products</b><br>----------------<br>Write MFS/FCH FITS and HDF products, quicklook figures, and logs"]
         CLEAN["<b>cleanup</b><br>----------------<br>Remove successful temporary work directories"]
         W1 --> COPY

@@ -7,7 +7,7 @@ This module ports the active test full-band workflow into package code:
 2. DP3 applycal from a matching H5Parm caltable
 3. DP3 AOFlagger using ``LWA_sun_PZ.lua``
 4. DP3 average by frequency
-5. TTCalSun solve/application mode, normally ``zest``
+5. run a phase-only selfcal with WSClean model visibilities and DP3 gaincal
 6. remove bright sources farther than the configured Sun exclusion radius
 7. chgcentre to the Sun
 8. DP3 average again
@@ -31,6 +31,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
+import numpy as np
+
 try:
     from .resources import aoflagger_strategy_path
     from .source_list import distance_to_src_list, get_sun_ra_dec, get_time_mjd, mask_far_sun_sources
@@ -47,14 +49,6 @@ WORKSPACE_ROOT = PROJECT_ROOT.parent
 ROOT = WORKSPACE_ROOT
 DEFAULT_WORK_DIR = WORKSPACE_ROOT / "tests" / "_lwasolarproc_fullband"
 DEFAULT_AOFLAGGER_STRATEGY = aoflagger_strategy_path()
-DEFAULT_SOURCES_JSON = WORKSPACE_ROOT / "TTCalX" / "sources.json"
-if not DEFAULT_SOURCES_JSON.exists():
-    DEFAULT_SOURCES_JSON = PROJECT_ROOT / "TTCalX" / "sources.json"
-if not DEFAULT_SOURCES_JSON.exists():
-    DEFAULT_SOURCES_JSON = WORKSPACE_ROOT / "TTCal.jl" / "test" / "sources.json"
-DEFAULT_TTCALSUN_BIN = WORKSPACE_ROOT / "TTCalSun" / "bin" / "ttcalsun_cpu.sh"
-if not DEFAULT_TTCALSUN_BIN.exists():
-    DEFAULT_TTCALSUN_BIN = PROJECT_ROOT / "TTCalSun" / "bin" / "ttcalsun_cpu.sh"
 DEFAULT_DP3_BIN = "/opt/dp3-6.5.1/bin/DP3"
 DEFAULT_CASARC = Path.home() / ".casarc"
 
@@ -82,26 +76,29 @@ class BandResult:
 class PipelineConfig:
     work_dir: Path = DEFAULT_WORK_DIR
     dp3_bin: str = DEFAULT_DP3_BIN
-    ttcalsun_bin: str = str(DEFAULT_TTCALSUN_BIN)
-    sources_json: Path = DEFAULT_SOURCES_JSON
     aoflagger_strategy: Path = DEFAULT_AOFLAGGER_STRATEGY
     casarc: Path | None = DEFAULT_CASARC
-    mode: str = "zest"
-    beam: str = "lwa178"
     threads: int = 18
     avg_chanbin: int = 4
-    maxiter: int = 30
-    tolerance: float = 1e-4
-    minuvw: float = 30.0
-    maxuvw: float | None = None
-    peeliter: int = 3
-    phase_only_maxiter: int = 0
     column: str = "CORRECTED_DATA"
     observatory: str = "OVRO"
     reuse_workdir: bool = False
     dry_run: bool = False
     copy_ms: bool = True
-    run_ttcalsun: bool = True
+    run_phase_selfcal: bool = True
+    selfcal_solint: int = 0
+    selfcal_caltype: str = "diagonalphase"
+    selfcal_uvlambdamin: float = 30.0
+    selfcal_maxiter: int = 500
+    selfcal_tolerance: float = 1e-5
+    selfcal_use_model_column: bool = True
+    selfcal_model_column: str = "MODEL_DATA"
+    selfcal_image_size: int = 4096
+    selfcal_scale: str = "2arcmin"
+    selfcal_niter: int = 800
+    selfcal_mgain: float = 0.9
+    selfcal_horizon_mask: str = "5deg"
+    selfcal_cleanup_images: bool = True
     run_bright_source_removal: bool = True
     bright_source_min_distance_deg: float = 6.0
     bright_source_image_size: int = 4096
@@ -110,6 +107,11 @@ class PipelineConfig:
     bright_source_mgain: float = 0.9
     bright_source_horizon_mask: str = "0.1deg"
     bright_source_cleanup_images: bool = True
+    model_auto_pix_fov: bool = True
+    model_auto_telescope_size_m: float = 2500.0
+    model_auto_im_fov_arcsec: float = 182.0 * 3600.0
+    model_auto_pix_scale_factor: float = 2.2
+    model_auto_min_size: int | None = None
     mfs_pols: str = "I,V"
     run_fine_channel: bool = True
     fch_pol: str = "I"
@@ -350,24 +352,56 @@ def build_dp3_subtract_sources_command(
     ]
 
 
-def build_ttcalsun_command(config: PipelineConfig, ms_path: Path, column: str = "DATA") -> list[str]:
-    cmd = [
-        config.ttcalsun_bin,
-        config.mode,
-        f"--column={column}",
-        f"--maxiter={config.maxiter}",
-        f"--tolerance={config.tolerance}",
-        f"--minuvw={config.minuvw}",
-        f"--beam={config.beam}",
-        f"--peeliter={config.peeliter}",
-        f"--phase-only-maxiter={config.phase_only_maxiter}",
-        "--timings",
-        str(config.sources_json.resolve()),
-        str(ms_path),
+def build_dp3_gaincal_command(
+    config: PipelineConfig,
+    input_ms: Path,
+    solution_path: Path,
+) -> list[str]:
+    return [
+        config.dp3_bin,
+        "verbosity=quiet",
+        "showcounts=false",
+        "showprogress=false",
+        "showtimings=false",
+        f"msin={input_ms}",
+        "msin.datacolumn=DATA",
+        "msout=.",
+        "steps=[gaincal]",
+        "gaincal.type=gaincal",
+        f"gaincal.solint={config.selfcal_solint}",
+        f"gaincal.caltype={config.selfcal_caltype}",
+        f"gaincal.uvlambdamin={config.selfcal_uvlambdamin}",
+        f"gaincal.maxiter={config.selfcal_maxiter}",
+        f"gaincal.tolerance={config.selfcal_tolerance}",
+        f"gaincal.usemodelcolumn={'true' if config.selfcal_use_model_column else 'false'}",
+        f"gaincal.modelcolumn={config.selfcal_model_column}",
+        f"gaincal.parmdb={solution_path}",
     ]
-    if config.maxuvw is not None:
-        cmd.insert(6, f"--maxuvw={config.maxuvw}")
-    return cmd
+
+
+def build_dp3_phase_applycal_command(
+    config: PipelineConfig,
+    input_ms: Path,
+    output_ms: Path,
+    solution_path: Path,
+) -> list[str]:
+    return [
+        config.dp3_bin,
+        "verbosity=quiet",
+        "showcounts=false",
+        "showprogress=false",
+        "showtimings=false",
+        f"msin={input_ms}",
+        "msin.datacolumn=DATA",
+        f"msout={output_ms}",
+        "msout.overwrite=true",
+        "msout.datacolumn=DATA",
+        "steps=[applycal]",
+        "applycal.type=applycal",
+        f"applycal.parmdb={solution_path}",
+        "applycal.steps=[phase]",
+        "applycal.phase.correction=phase000",
+    ]
 
 
 def averaged_ms_path(ms_path: Path, chanbin: int) -> Path:
@@ -419,6 +453,92 @@ def run_average_channels(
     return output_ms
 
 
+def phase_selfcal_ms_path(ms_path: Path) -> Path:
+    return ms_path.with_name(f"{ms_path.stem}_phase_selfcal.ms")
+
+
+def phase_selfcal_solution_path(ms_path: Path) -> Path:
+    return ms_path.with_name(f"{ms_path.stem}_phase_selfcal.h5")
+
+
+def phase_selfcal_wsclean_options(config: PipelineConfig) -> WSCleanOptions:
+    return WSCleanOptions(
+        wsclean_bin=config.wsclean.wsclean_bin,
+        threads=config.threads,
+        mem_percent=config.wsclean.mem_percent,
+        size=config.selfcal_image_size,
+        scale=config.selfcal_scale,
+        data_column="DATA",
+        pol="I",
+        weight=("uniform",),
+        niter=config.selfcal_niter,
+        mgain=config.selfcal_mgain,
+        auto_mask=None,
+        auto_threshold=None,
+        horizon_mask=config.selfcal_horizon_mask,
+        minuv_l=config.wsclean.minuv_l,
+        beam_fitting_size=config.wsclean.beam_fitting_size,
+        field=None,
+        intervals_out=1,
+        no_reorder=config.wsclean.no_reorder,
+        no_dirty=config.wsclean.no_dirty,
+        no_update_model_required=config.wsclean.no_update_model_required,
+        no_negative=True,
+        quiet=config.wsclean.quiet,
+        auto_pix_fov=config.model_auto_pix_fov,
+        auto_telescope_size_m=config.model_auto_telescope_size_m,
+        auto_im_fov_arcsec=config.model_auto_im_fov_arcsec,
+        auto_pix_scale_factor=config.model_auto_pix_scale_factor,
+        auto_min_size=config.model_auto_min_size,
+    )
+
+
+def run_phase_selfcal(
+    input_ms: Path,
+    config: PipelineConfig,
+    timings: dict[str, float],
+) -> tuple[Path, dict[str, Path]]:
+    output_ms = phase_selfcal_ms_path(input_ms)
+    if output_ms.exists():
+        if config.reuse_workdir:
+            print(f"[reuse] {output_ms}")
+            return output_ms, {"phase_selfcal_ms": output_ms}
+        raise FileExistsError(f"Phase-selfcal MS already exists: {output_ms}")
+
+    solution_path = phase_selfcal_solution_path(input_ms)
+    model_prefix = input_ms.parent / f"{input_ms.stem}_phase_selfcal_model"
+    print(f"[phase-selfcal] {input_ms.name} -> {output_ms.name}")
+    start = time.perf_counter()
+    if not config.dry_run:
+        clear_model_data_column(input_ms)
+
+    options = phase_selfcal_wsclean_options(config)
+    result = run_wsclean(input_ms, model_prefix, options, dry_run=config.dry_run)
+    if config.dry_run:
+        print(f"[dry-run] {shlex_join(result)}")
+
+    run_command(
+        build_dp3_gaincal_command(config, input_ms, solution_path),
+        dry_run=config.dry_run,
+        extra_env=casarc_env(config),
+    )
+    run_command(
+        build_dp3_phase_applycal_command(config, input_ms, output_ms, solution_path),
+        dry_run=config.dry_run,
+        extra_env=casarc_env(config),
+    )
+    timings["phase_selfcal_s"] = time.perf_counter() - start
+
+    if not config.dry_run and config.selfcal_cleanup_images:
+        cleanup_wsclean_products(model_prefix, keep_suffixes=set())
+
+    return output_ms, {
+        "phase_selfcal_ms": output_ms,
+        "phase_selfcal_solution": solution_path,
+        "phase_selfcal_model_prefix": model_prefix,
+    }
+
+
 def source_removal_ms_path(ms_path: Path) -> Path:
     return ms_path.with_name(f"{ms_path.stem}_bright_sources_removed.ms")
 
@@ -432,19 +552,26 @@ def bright_source_wsclean_options(config: PipelineConfig) -> WSCleanOptions:
         scale=config.bright_source_scale,
         data_column="DATA",
         pol="I",
-        weight=tuple(config.wsclean.weight),
+        weight=("uniform",),
         niter=config.bright_source_niter,
         mgain=config.bright_source_mgain,
-        auto_mask=None,
-        auto_threshold=config.wsclean.auto_threshold,
+        auto_mask=8,
+        auto_threshold=3,
         horizon_mask=config.bright_source_horizon_mask,
         minuv_l=config.wsclean.minuv_l,
         beam_fitting_size=config.wsclean.beam_fitting_size,
+        field="all",
+        intervals_out=1,
         no_reorder=config.wsclean.no_reorder,
         no_dirty=config.wsclean.no_dirty,
         no_update_model_required=config.wsclean.no_update_model_required,
-        no_negative=config.wsclean.no_negative,
+        no_negative=True,
         quiet=config.wsclean.quiet,
+        auto_pix_fov=config.model_auto_pix_fov,
+        auto_telescope_size_m=config.model_auto_telescope_size_m,
+        auto_im_fov_arcsec=config.model_auto_im_fov_arcsec,
+        auto_pix_scale_factor=config.model_auto_pix_scale_factor,
+        auto_min_size=config.model_auto_min_size,
     )
 
 
@@ -458,6 +585,38 @@ def cleanup_wsclean_products(output_prefix: Path, keep_suffixes: set[str]) -> No
             shutil.rmtree(path)
         else:
             path.unlink()
+
+
+def clear_model_data_column(ms_path: Path, chunk_rows: int = 512) -> bool:
+    """
+    Zero the Measurement Set ``MODEL_DATA`` column in place if it exists.
+
+    This is used around bright-source removal so stale or WSClean-generated
+    model visibilities do not leak into DP3 prediction/subtraction.
+    """
+    from casacore.tables import table  # type: ignore
+
+    with table(str(ms_path), readonly=False, ack=False) as tb:
+        if "MODEL_DATA" not in tb.colnames():
+            print(f"[model-column] {ms_path.name}: MODEL_DATA not present, skipping clear")
+            return False
+
+        nrows = tb.nrows()
+        if nrows == 0:
+            print(f"[model-column] {ms_path.name}: MODEL_DATA present but table is empty")
+            return True
+
+        sample = np.asarray(tb.getcol("MODEL_DATA", startrow=0, nrow=1))
+        zero_shape = sample.shape[1:]
+        dtype = sample.dtype
+
+        for start_row in range(0, nrows, chunk_rows):
+            nrow = min(chunk_rows, nrows - start_row)
+            zeros = np.zeros((nrow,) + zero_shape, dtype=dtype)
+            tb.putcol("MODEL_DATA", zeros, startrow=start_row, nrow=nrow)
+
+    print(f"[model-column] {ms_path.name}: cleared MODEL_DATA")
+    return True
 
 
 def run_bright_source_removal(
@@ -482,6 +641,8 @@ def run_bright_source_removal(
         f"exclude_sun_radius={config.bright_source_min_distance_deg:g}deg"
     )
     start = time.perf_counter()
+    if not config.dry_run:
+        clear_model_data_column(input_ms)
     options = bright_source_wsclean_options(config)
     result = run_wsclean(input_ms, output_prefix, options, dry_run=config.dry_run, save_source_list=True)
     if config.dry_run:
@@ -513,6 +674,7 @@ def run_bright_source_removal(
         distance_deg=config.bright_source_min_distance_deg,
     )
 
+    clear_model_data_column(input_ms)
     run_command(
         build_dp3_subtract_sources_command(config, input_ms, output_ms, far_source_list),
         dry_run=False,
@@ -692,43 +854,37 @@ def process_band(target: BandTarget, config: PipelineConfig) -> BandResult:
         )
         timings["aoflagger_s"] = time.perf_counter() - start
 
-        pre_mode_ms = run_average_channels(work_ms, config.column, config, timings, "average_before_mode_s")
-        products["averaged_before_mode_ms"] = pre_mode_ms
+        pre_selfcal_ms = run_average_channels(work_ms, config.column, config, timings, "average_before_selfcal_s")
+        products["averaged_before_selfcal_ms"] = pre_selfcal_ms
 
-        if config.run_ttcalsun:
-            start = time.perf_counter()
-            completed = run_command(
-                build_ttcalsun_command(config, pre_mode_ms),
-                dry_run=config.dry_run,
-                capture=True,
-            )
-            timings[f"ttcalsun_{config.mode}_s"] = time.perf_counter() - start
-            stdout = "" if completed is None else completed.stdout
-            if not config.dry_run:
-                (target.work_dir / f"ttcalsun_{config.mode}.log").write_text(stdout)
+        calibrated_ms = pre_selfcal_ms
+        if config.run_phase_selfcal:
+            calibrated_ms, phase_selfcal_products = run_phase_selfcal(pre_selfcal_ms, config, timings)
+            products.update(phase_selfcal_products)
 
-        source_removed_ms = pre_mode_ms
+        source_removed_ms = calibrated_ms
         if config.run_bright_source_removal:
-            source_removed_ms, source_removal_products = run_bright_source_removal(pre_mode_ms, config, timings)
+            source_removed_ms, source_removal_products = run_bright_source_removal(calibrated_ms, config, timings)
             products.update(source_removal_products)
 
         sun_ms = sun_center_ms(source_removed_ms, config, timings)
         products["sun_centered_ms"] = sun_ms
 
-        post_mode_ms = run_average_channels(sun_ms, "DATA", config, timings, "average_after_mode_s")
-        products["averaged_after_mode_ms"] = post_mode_ms
+        post_selfcal_ms = run_average_channels(sun_ms, "DATA", config, timings, "average_after_selfcal_s")
+        products["averaged_after_selfcal_ms"] = post_selfcal_ms
 
         image_dir = target.work_dir / "images"
         image_dir.mkdir(parents=True, exist_ok=True)
 
-        mfs_prefix = image_dir / f"{post_mode_ms.stem}_after_{config.mode}_sun_centered_mfs"
-        mfs_fits = run_mfs_wsclean(post_mode_ms, mfs_prefix, config, timings)
+        mode_label = "phase_selfcal" if config.run_phase_selfcal else "no_selfcal"
+        mfs_prefix = image_dir / f"{post_selfcal_ms.stem}_after_{mode_label}_sun_centered_mfs"
+        mfs_fits = run_mfs_wsclean(post_selfcal_ms, mfs_prefix, config, timings)
         for pol, fits_path in mfs_fits.items():
             products[f"mfs_{pol}_fits"] = fits_path
 
         if config.run_fine_channel:
-            fch_prefix = image_dir / f"{post_mode_ms.stem}_after_{config.mode}_sun_centered_fch_i"
-            fch_fits = run_fine_channel_wsclean(post_mode_ms, fch_prefix, config, timings)
+            fch_prefix = image_dir / f"{post_selfcal_ms.stem}_after_{mode_label}_sun_centered_fch_i"
+            fch_fits = run_fine_channel_wsclean(post_selfcal_ms, fch_prefix, config, timings)
             products["fch_i_fits"] = fch_fits
 
         status = "ok"
@@ -968,16 +1124,18 @@ def write_summary(work_dir: Path, results: Sequence[BandResult]) -> Path:
         "elapsed_s",
         "applycal_s",
         "aoflagger_s",
-        "average_before_mode_s",
-        "ttcalsun_s",
+        "average_before_selfcal_s",
+        "phase_selfcal_s",
         "bright_source_removal_s",
         "sun_centering_s",
-        "average_after_mode_s",
+        "average_after_selfcal_s",
         "wsclean_mfs_s",
         "wsclean_fch_i_s",
         "bright_source_all_count",
         "bright_source_subtracted_count",
         "work_dir",
+        "phase_selfcal_ms",
+        "phase_selfcal_solution",
         "bright_source_removed_ms",
         "mfs_i_fits",
         "mfs_v_fits",
@@ -993,16 +1151,18 @@ def write_summary(work_dir: Path, results: Sequence[BandResult]) -> Path:
             f"{result.elapsed_s:.2f}",
             _fmt_timing(result, "applycal_s"),
             _fmt_timing(result, "aoflagger_s"),
-            _fmt_timing(result, "average_before_mode_s"),
-            _fmt_ttcalsun_timing(result),
+            _fmt_timing(result, "average_before_selfcal_s"),
+            _fmt_timing(result, "phase_selfcal_s"),
             _fmt_timing(result, "bright_source_removal_s"),
             _fmt_timing(result, "sun_centering_s"),
-            _fmt_timing(result, "average_after_mode_s"),
+            _fmt_timing(result, "average_after_selfcal_s"),
             _fmt_timing(result, "wsclean_mfs_s"),
             _fmt_timing(result, "wsclean_fch_i_s"),
             str(result.products.get("bright_source_all_count", "")),
             str(result.products.get("bright_source_subtracted_count", "")),
             str(result.work_dir),
+            _fmt_product(result.products.get("phase_selfcal_ms")),
+            _fmt_product(result.products.get("phase_selfcal_solution")),
             _fmt_product(result.products.get("bright_source_removed_ms")),
             _fmt_product(result.products.get("mfs_i_fits")),
             _fmt_product(result.products.get("mfs_v_fits")),
@@ -1025,13 +1185,6 @@ def _fmt_product(value: object) -> str:
     return ";".join(str(path) for path in _as_paths(value))
 
 
-def _fmt_ttcalsun_timing(result: BandResult) -> str:
-    for key in sorted(result.timings):
-        if key.startswith("ttcalsun_") and key.endswith("_s"):
-            return f"{result.timings[key]:.2f}"
-    return ""
-
-
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run full-band LWA solar preprocessing through WSClean FITS products.",
@@ -1049,19 +1202,21 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--jobs", type=int, default=1)
     parser.add_argument("--threads", type=int, default=18)
     parser.add_argument("--dp3-bin", default=DEFAULT_DP3_BIN)
-    parser.add_argument("--ttcalsun-bin", default=str(DEFAULT_TTCALSUN_BIN))
-    parser.add_argument("--sources-json", type=Path, default=DEFAULT_SOURCES_JSON)
     parser.add_argument("--aoflagger-strategy", type=Path, default=DEFAULT_AOFLAGGER_STRATEGY)
-    parser.add_argument("--mode", choices=["peel", "shave", "zest", "prune"], default="zest")
-    parser.add_argument("--beam", default="lwa178")
     parser.add_argument("--avg-chanbin", type=int, default=4)
-    parser.add_argument("--minuvw", type=float, default=30.0)
-    parser.add_argument("--maxuvw", type=float)
-    parser.add_argument("--maxiter", type=int, default=30)
-    parser.add_argument("--tolerance", type=float, default=1e-4)
-    parser.add_argument("--peeliter", type=int, default=3)
-    parser.add_argument("--phase-only-maxiter", type=int, default=0)
     parser.add_argument("--observatory", default="OVRO")
+    parser.add_argument("--no-phase-selfcal", action="store_true", help="Skip WSClean+DP3 phase selfcal after the first avg4ch step.")
+    parser.add_argument("--selfcal-solint", type=int, default=0)
+    parser.add_argument("--selfcal-caltype", default="diagonalphase")
+    parser.add_argument("--selfcal-uvlambdamin", type=float, default=30.0)
+    parser.add_argument("--selfcal-maxiter", type=int, default=500)
+    parser.add_argument("--selfcal-tolerance", type=float, default=1e-5)
+    parser.add_argument("--selfcal-image-size", type=int, default=4096)
+    parser.add_argument("--selfcal-scale", default="2arcmin")
+    parser.add_argument("--selfcal-niter", type=int, default=800)
+    parser.add_argument("--selfcal-mgain", type=float, default=0.9)
+    parser.add_argument("--selfcal-horizon-mask", default="5deg")
+    parser.add_argument("--keep-selfcal-images", action="store_true", help="Keep temporary full-sky WSClean products used for phase selfcal.")
     parser.add_argument(
         "--no-bright-source-removal",
         action="store_true",
@@ -1109,6 +1264,52 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--wsclean-bin", default="wsclean")
     parser.add_argument("--image-size", type=int, default=384)
     parser.add_argument("--scale", default="1.5arcmin")
+    parser.add_argument(
+        "--model-auto-pix-fov",
+        "--auto-pix-fov",
+        dest="model_auto_pix_fov",
+        action="store_true",
+        default=True,
+        help="Use frequency-dependent WSClean geometry for selfcal and bright-source model images.",
+    )
+    parser.add_argument(
+        "--no-model-auto-pix-fov",
+        "--no-auto-pix-fov",
+        dest="model_auto_pix_fov",
+        action="store_false",
+        help="Use fixed model image geometry for selfcal and bright-source removal.",
+    )
+    parser.add_argument(
+        "--model-auto-im-fov-deg",
+        "--auto-im-fov-deg",
+        dest="model_auto_im_fov_deg",
+        type=float,
+        default=182.0,
+        help="Target image field of view for selfcal and bright-source auto geometry.",
+    )
+    parser.add_argument(
+        "--model-auto-telescope-size-m",
+        dest="model_auto_telescope_size_m",
+        type=float,
+        default=2500.0,
+        help="Effective telescope size in meters for selfcal and bright-source auto geometry.",
+    )
+    parser.add_argument(
+        "--model-auto-pix-scale-factor",
+        "--auto-pix-scale-factor",
+        dest="model_auto_pix_scale_factor",
+        type=float,
+        default=2.2,
+        help="Pixels per synthesized beam factor used by selfcal and bright-source auto geometry.",
+    )
+    parser.add_argument(
+        "--model-auto-min-size",
+        "--auto-min-size",
+        dest="model_auto_min_size",
+        type=int,
+        default=None,
+        help="Optional minimum FFT-friendly image size for selfcal and bright-source auto geometry.",
+    )
     parser.add_argument("--niter", type=int, default=10000)
     parser.add_argument("--weight", nargs=2, default=["briggs", "-0.5"])
     parser.add_argument("--horizon-mask", default="5deg")
@@ -1146,7 +1347,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--no-local-rms", action="store_false", dest="local_rms")
     parser.add_argument("--reuse-workdir", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--skip-ttcalsun", action="store_true")
     return parser.parse_args(argv)
 
 
@@ -1154,23 +1354,24 @@ def config_from_args(args: argparse.Namespace) -> PipelineConfig:
     return PipelineConfig(
         work_dir=args.work_dir.expanduser().resolve(),
         dp3_bin=args.dp3_bin,
-        ttcalsun_bin=args.ttcalsun_bin,
-        sources_json=args.sources_json.expanduser().resolve(),
         aoflagger_strategy=args.aoflagger_strategy.expanduser().resolve(),
-        mode=args.mode,
-        beam=args.beam,
         threads=args.threads,
         avg_chanbin=args.avg_chanbin,
-        maxiter=args.maxiter,
-        tolerance=args.tolerance,
-        minuvw=args.minuvw,
-        maxuvw=args.maxuvw,
-        peeliter=args.peeliter,
-        phase_only_maxiter=args.phase_only_maxiter,
         observatory=args.observatory,
         reuse_workdir=args.reuse_workdir,
         dry_run=args.dry_run,
-        run_ttcalsun=not args.skip_ttcalsun,
+        run_phase_selfcal=not args.no_phase_selfcal,
+        selfcal_solint=args.selfcal_solint,
+        selfcal_caltype=args.selfcal_caltype,
+        selfcal_uvlambdamin=args.selfcal_uvlambdamin,
+        selfcal_maxiter=args.selfcal_maxiter,
+        selfcal_tolerance=args.selfcal_tolerance,
+        selfcal_image_size=args.selfcal_image_size,
+        selfcal_scale=args.selfcal_scale,
+        selfcal_niter=args.selfcal_niter,
+        selfcal_mgain=args.selfcal_mgain,
+        selfcal_horizon_mask=args.selfcal_horizon_mask,
+        selfcal_cleanup_images=not args.keep_selfcal_images,
         run_bright_source_removal=not args.no_bright_source_removal,
         bright_source_min_distance_deg=args.bright_source_min_distance_deg,
         bright_source_image_size=args.bright_source_image_size,
@@ -1179,6 +1380,11 @@ def config_from_args(args: argparse.Namespace) -> PipelineConfig:
         bright_source_mgain=args.bright_source_mgain,
         bright_source_horizon_mask=args.bright_source_horizon_mask,
         bright_source_cleanup_images=not args.keep_bright_source_images,
+        model_auto_pix_fov=args.model_auto_pix_fov,
+        model_auto_telescope_size_m=args.model_auto_telescope_size_m,
+        model_auto_im_fov_arcsec=args.model_auto_im_fov_deg * 3600.0,
+        model_auto_pix_scale_factor=args.model_auto_pix_scale_factor,
+        model_auto_min_size=args.model_auto_min_size,
         mfs_pols=args.mfs_pols,
         run_fine_channel=not args.no_fine_channel,
         fch_channels_out=args.fch_channels_out,

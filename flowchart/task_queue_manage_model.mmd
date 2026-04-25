@@ -28,7 +28,7 @@ graph TD
         direction LR
         WORKER["Worker slot<br>`worker_i` process context"]
         COPY["<b>copy MS inputs</b><br>----------------<br>Copy all visible production-band MS directories into `proc_tmp/worker_i/{timestamp}`"]
-        PROC["<b>run fullband pipeline</b><br>----------------<br>applycal -> aoflagger -> avg4 -> TTCalSun -> bright source removal -> sun center -> avg4 -> WSClean -> helio -> combine -> plot"]
+        PROC["<b>run fullband pipeline</b><br>----------------<br>applycal -> aoflagger -> avg4 -> phase selfcal -> bright source removal -> sun center -> avg4 -> WSClean -> helio -> combine -> plot"]
         LOG["<b>write logs and summaries</b><br>----------------<br>Save manager, worker, summary TSV, and product bookkeeping logs"]
         CLEAN["<b>cleanup temp tree</b><br>----------------<br>Remove successful worker temporary directories to avoid file accumulation"]
   end

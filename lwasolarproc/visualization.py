@@ -306,7 +306,7 @@ def slow_pipeline_default_plot(
                 x_shift = 0.0
                 y_shift = 0.0
 
-            vmaxplt = np.nanpercentile(image, 99.9)
+            vmaxplt = np.nanpercentile(image, 99.99)
             if not np.isfinite(vmaxplt):
                 vmaxplt = None
             ax.imshow(
@@ -384,14 +384,16 @@ def slow_pipeline_default_polarization_plot(
     add_logo: bool = True,
     interpolation: str = "bicubic",
     apply_refraction_param: bool = False,
-    ratio_vmin: float = -0.25,
-    ratio_vmax: float = 0.25,
+    ratio_vmin: float = -0.6,
+    ratio_vmax: float = 0.6,
     mask_sigma: float = 5.0,
     mask_corner_size: int = 56,
     badants_arr=None,
 ):
-    """Plot a 12-panel Stokes ``V/I`` quicklook using the slow-pipeline layout."""
+    """Plot a 12-panel Stokes ``V`` quicklook with per-panel ``max|V|`` labels."""
     from . import ndfits
+
+    del ratio_vmin, ratio_vmax, mask_sigma, mask_corner_size
 
     meta_i, i_data = ndfits.read(i_fname)
     meta_v, v_data = ndfits.read(v_fname)
@@ -403,14 +405,14 @@ def slow_pipeline_default_polarization_plot(
     freqs_i_mhz = np.asarray(meta_i["ref_cfreqs"], dtype=float) / 1e6
     freqs_v_mhz = np.asarray(meta_v["ref_cfreqs"], dtype=float) / 1e6
     if freqs_i_mhz.shape != freqs_v_mhz.shape or not np.allclose(freqs_i_mhz, freqs_v_mhz, atol=1e-3):
-        raise ValueError("I and V FITS cubes must share the same frequency axis for V/I plotting")
+        raise ValueError("I and V FITS cubes must share the same frequency axis for Stokes V plotting")
 
     do_badants_label = badants_arr is not None and len(badants_arr) == len(freqs_i_mhz)
     badants_arr = np.asarray(badants_arr) if do_badants_label else None
 
     fig = plt.figure(figsize=(8, 6.5))
     gs = gridspec.GridSpec(3, 4, left=0.07, right=0.98, top=0.94, bottom=0.10, wspace=0.02, hspace=0.02)
-    ratio_cmap = _copy_cmap_with_bad("RdBu_r", bad_color="white")
+    v_cmap = _copy_cmap_with_bad("RdBu_r", bad_color="white")
 
     axes = []
     for i in range(12):
@@ -424,18 +426,15 @@ def slow_pipeline_default_polarization_plot(
 
         if np.min(np.abs(freqs_i_mhz - freq_plt)) < 2.0:
             bd = int(np.argmin(np.abs(freqs_i_mhz - freq_plt)))
-            image_i = _channel_image(i_data, bd)
             image_v = _channel_image(v_data, bd)
-            sigma_i = _corner_noise_sigma(image_i, corner_size=mask_corner_size)
-
-            valid = np.isfinite(image_i) & np.isfinite(image_v) & (image_i != 0)
-            ratio = np.full(image_i.shape, np.nan, dtype=float)
-            np.divide(image_v, image_i, out=ratio, where=valid)
-            if np.isfinite(sigma_i) and sigma_i > 0:
-                ratio[image_i < mask_sigma * sigma_i] = np.nan
+            v_plot = image_v / 1e6
+            abs_vmax = np.nanpercentile(np.abs(v_plot), 99.99)
+            if not np.isfinite(abs_vmax) or abs_vmax <= 0:
+                abs_vmax = None
+            max_abs_v = np.nanmax(np.abs(v_plot)) if np.any(np.isfinite(v_plot)) else np.nan
 
             channel_header = _channel_header(header, freqs_i_mhz[bd] * 1e6)
-            solar_map = smap.Map(ratio, channel_header)
+            solar_map = smap.Map(v_plot, channel_header)
 
             if apply_refraction_param and not rfrcor:
                 x_shift = _safe_channel(meta_i, "refra_shift_x", bd, 0.0)
@@ -447,10 +446,10 @@ def slow_pipeline_default_polarization_plot(
             ax.imshow(
                 np.ma.masked_invalid(solar_map.data),
                 origin="lower",
-                extent=_image_extent_arcsec(channel_header, ratio),
-                cmap=ratio_cmap,
-                vmin=ratio_vmin,
-                vmax=ratio_vmax,
+                extent=_image_extent_arcsec(channel_header, v_plot),
+                cmap=v_cmap,
+                vmin=-abs_vmax if abs_vmax is not None else None,
+                vmax=abs_vmax,
                 interpolation=interpolation,
             )
             _plot_solar_limb(ax, solar_map, channel_header, color="k", alpha=1.0, lw=1.4)
@@ -470,6 +469,17 @@ def slow_pipeline_default_polarization_plot(
                     ec="k",
                 )
                 ax.add_artist(beam)
+            v_label = "nan" if not np.isfinite(max_abs_v) else f"{max_abs_v:.2f}MK"
+            ax.text(
+                0.99,
+                0.02,
+                r"$\max |V|=$" + v_label,
+                color="k",
+                ha="right",
+                va="bottom",
+                fontsize=9,
+                transform=ax.transAxes,
+            )
             if do_badants_label:
                 ax.text(
                     0.99,
@@ -491,21 +501,10 @@ def slow_pipeline_default_polarization_plot(
         if i not in [0, 4, 8]:
             ax.set_ylabel("")
             ax.get_yaxis().set_ticks([])
-        if i == 11:
-            ax.text(
-                0.99,
-                0.02,
-                "[-0.25,0.25]",
-                color="k",
-                ha="right",
-                va="bottom",
-                fontsize=10,
-                transform=ax.transAxes,
-            )
         axes.append(ax)
 
     suffix = "[refraction corrected]" if rfrcor else "[original]"
-    fig.suptitle(f"OVRO-LWA {str(date_obs)[:19]} Stokes V/I {suffix}", fontsize=12)
+    fig.suptitle(f"OVRO-LWA {str(date_obs)[:19]} Stokes V {suffix}", fontsize=12)
     if add_logo:
         _add_default_logos(fig)
     return fig, axes

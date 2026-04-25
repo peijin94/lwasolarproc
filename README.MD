@@ -57,7 +57,7 @@ The command wraps the full-band workflow:
 2. apply H5Parm calibration with DP3
 3. run AOFlagger with the bundled `LWA_sun_PZ.lua`
 4. average by 4 channels
-5. run TTCalSun
+5. run phase-only selfcal with WSClean model visibilities and DP3 `gaincal`
 6. build a WSClean source list and subtract bright sources farther than the Sun exclusion radius
 7. recenter on the Sun
 8. average by 4 channels again
@@ -87,7 +87,17 @@ lwasolarproc-fullband \
   --dry-run
 ```
 
-Bright source removal is enabled by default. It runs a temporary full-sky WSClean pass with `-save-source-list`, writes the all-source list, keeps only components farther than `--bright-source-min-distance-deg` from the Sun, and subtracts those components from the post-TTCalSun averaged MS with DP3 `predict.operation=subtract`. The temporary full-sky FITS/model products are deleted by default; use `--keep-bright-source-images` if you need to inspect them.
+Phase selfcal is enabled by default. It runs a temporary full-sky WSClean model on the first averaged MS, solves a diagonal phase H5Parm with DP3 `gaincal`, and applies only the `phase000` solution before bright-source subtraction. Use `--no-phase-selfcal` to bypass this stage for control tests.
+
+Bright source removal is enabled by default. It runs a temporary full-sky WSClean pass with `-save-source-list`, writes the all-source list, keeps only components farther than `--bright-source-min-distance-deg` from the Sun, and subtracts those components from the post-selfcal averaged MS with DP3 `predict.operation=subtract`. The temporary full-sky FITS/model products are deleted by default; use `--keep-bright-source-images` if you need to inspect them.
+
+The temporary model-imaging passes used by phase selfcal and bright-source removal use frequency-dependent auto geometry by default. The current model auto-geometry defaults are:
+
+- effective telescope size: `2500 m`
+- pixel scale factor: `2.2`
+- model field of view: `182 deg`
+
+For the current production bands, this gives model-image sizes from about `1200 x 1200` at `23 MHz` to `4050 x 4050` at `82 MHz`. The final small-FOV solar WSClean products do not use auto geometry; they keep the fixed `384 x 384`, `1.5arcmin` image geometry.
 
 Useful source-removal options:
 
@@ -103,9 +113,11 @@ lwasolarproc-fullband \
 
 Use `--no-bright-source-removal` to run the older path without source-list subtraction.
 
-Current default WSClean imaging settings use `-quiet`, `-j 18`, `-mem 8`, `-size 384 384`, `-scale 1.5arcmin`, `-weight briggs -0.5`, `-minuv-l 10`, `-auto-threshold 3`, `-niter 10000`, `-mgain 0.8`, `-beam-fitting-size 2`, `-no-reorder`, `-no-update-model-required`, and `-no-dirty`.
+Current default final solar WSClean imaging settings use `-quiet`, `-j 18`, `-mem 8`, `-size 384 384`, `-scale 1.5arcmin`, `-weight briggs -0.5`, `-minuv-l 10`, `-auto-threshold 3`, `-niter 10000`, `-mgain 0.8`, `-beam-fitting-size 2`, `-no-reorder`, `-no-update-model-required`, and `-no-dirty`.
 
 The 2026-04-19 bright-source fullband benchmark at `/fast/rtpipe/tests/_lwasolarproc_fullband_bright_source_20260419` completed `13/13` bands in `66.97 s` wall time. The per-band average was `56.81 s`, including `21.76 s` for bright source removal, and produced combined MFS I, MFS V, and fine-channel I FITS files plus the default MFS I and MFS V/I plots.
+
+The 2026-04-24 phase-selfcal validation at `/fast/rtpipe/tests/_lwasolarproc_fullband_phase_selfcal_20260424_200004` completed `13/13` bands with `--jobs 4 --no-fine-channel`. The per-band average was `26.09 s`, including `7.39 s` for phase selfcal, `10.26 s` for bright-source removal, and `3.52 s` for MFS Stokes I,V WSClean. It produced combined MFS I/V FITS files and the default MFS I and V/I quicklook plots.
 
 ## Realtime Task Manager
 
@@ -128,7 +140,7 @@ By default the realtime figure outputs now include both:
 - `ovro-lwa-352.lev1.5_mfs_10s.YYYY-MM-DDTHHMMSSZ.image_I.png`
 - `ovro-lwa-352.lev1.5_mfs_10s.YYYY-MM-DDTHHMMSSZ.image_VI.png`
 
-The `image_VI.png` quicklook uses the same 12-panel layout as the MFS I figure, plots Stokes `V/I`, applies a fixed `[-0.25, 0.25]` color scale in every panel, and masks pixels where the corresponding Stokes `I` map is below `5 sigma`, with `sigma` measured from the lower-right `56 x 56` pixel corner of each channel image.
+The `image_VI.png` quicklook uses the same 12-panel layout as the MFS I figure but currently plots Stokes `V` in MK, not a masked `V/I` ratio. Each panel annotates `max|V|`, and the color scale is set from the `99.99` percentile of `|V|`.
 
 Current realtime defaults:
 
@@ -230,7 +242,7 @@ Per-frame slowest instrumented steps from the summary TSVs:
 | step | mean frame-max |
 |---|---:|
 | bright source removal | 30.50 s |
-| TTCalSun | 17.23 s |
+| calibration slot | 17.23 s |
 | WSClean fine-channel I | 16.97 s |
 | AOFlagger | 6.63 s |
 | WSClean MFS I,V | 4.25 s |
@@ -279,7 +291,7 @@ Per-frame slowest instrumented steps:
 |---|---:|
 | bright source removal | 25.75 s |
 | WSClean fine-channel I | 18.32 s |
-| TTCalSun | 14.08 s |
+| calibration slot | 14.08 s |
 | AOFlagger | 5.20 s |
 | WSClean MFS I,V | 4.19 s |
 | sun centering | 1.91 s |
@@ -330,7 +342,70 @@ Interpretation:
 
 If exact copy benchmarking is needed, add an explicit timer around `copy_available_ms_inputs()` in `lwasolarproc/realtime_task_manage.py`.
 
-#### 2026-04-21 bounded 26-task live test with V/I quicklook publishing
+#### 5-worker memdisk benchmark with phase selfcal and auto model geometry
+
+Path:
+
+```text
+/fast/rtpipe/proc_realtime_20260424_2000_18f_5w_memtmp
+```
+
+Configuration:
+
+- data start: `2026-04-24T20:00:04Z`
+- completed timestamps: `20260424_200004` through `20260424_200254`
+- workers: `5`
+- completed frames: `18`
+- failed frames: `0`
+- worker scratch: `/dev/shm/tmp_pipe_dir/proc_realtime_20260424_2000_18f_5w/proc_tmp`
+- output root: `/fast/rtpipe/proc_realtime_20260424_2000_18f_5w_memtmp/proc_out`
+- model auto geometry: `2500 m` telescope size, `2.2` pixel scale factor, `182 deg` field of view
+- final solar imaging geometry: fixed `384 x 384`, `1.5arcmin`
+
+Overall result:
+
+| metric | value |
+|---|---:|
+| total wall time | 595.67 s |
+| worker-frame mean | 126.43 s |
+| worker-frame min | 112.69 s |
+| worker-frame max | 147.63 s |
+
+Published product counts:
+
+| product dir | count |
+|---|---:|
+| `mfs` | 72 |
+| `fch` | 36 |
+| `fig` | 36 |
+| all files | 199 |
+
+Per-band means across `18 x 13 = 234` band runs:
+
+| step | mean |
+|---|---:|
+| band elapsed | 60.73 s |
+| applycal | 1.93 s |
+| aoflagger | 5.58 s |
+| avg before selfcal | 1.02 s |
+| phase selfcal | 8.49 s |
+| bright source removal | 12.56 s |
+| sun centering | 0.80 s |
+| avg after selfcal | 0.49 s |
+| WSClean MFS | 5.18 s |
+| WSClean FCH | 24.53 s |
+
+The realtime worker still does not record a dedicated copy timer. A direct copy benchmark using the same Lustre source tree and `/dev/shm` target copied all `13` production bands in:
+
+| timestamp | copy time |
+|---|---:|
+| `20260424_200004` | 1.52 s |
+| `20260424_200014` | 1.51 s |
+| `20260424_200024` | 1.49 s |
+
+Mean direct full-band input copy time was `1.51 s`. The larger worker residual outside the slowest per-band timer includes post-processing, HDF compression, publishing, plotting, cleanup, and manager/worker overhead, not just input copy.
+
+#### 2026-04-21 bounded 26-task live test with Stokes V quicklook publishing
 
 Path:
 
