@@ -51,6 +51,7 @@ class RealtimeTask:
 @dataclass(frozen=True)
 class WorkerConfig:
     slow_root: Path
+    source_layout: str
     proc_tmp: Path
     proc_out: Path
     caltable_dir: Path
@@ -58,7 +59,9 @@ class WorkerConfig:
     worker_id: int
     pipeline_jobs: int
     threads: int
+    fch_pols: str
     cleanup_failed: bool
+    worker_rm_tmp: bool
 
 
 @dataclass(frozen=True)
@@ -138,6 +141,33 @@ def format_output_timestamp(timestamp: str) -> str:
     return parse_timestamp(timestamp).strftime("%Y-%m-%dT%H%M%SZ")
 
 
+def normalize_mode(mode: str) -> str:
+    aliases = {
+        "backlog-mode": "backlog",
+        "realtime-mode": "realtime",
+        "event-data-proc-mode": "event",
+        "event-mode": "event",
+    }
+    return aliases.get(mode, mode)
+
+
+def timestamp_sequence(start_timestamp: str, end_timestamp: str, cadence_s: float) -> list[str]:
+    start = parse_timestamp(start_timestamp)
+    end = parse_timestamp(end_timestamp)
+    if end < start:
+        raise ValueError("--end-timestamp must be at or after --start-timestamp")
+    if cadence_s <= 0:
+        raise ValueError("--cadence-s must be positive")
+
+    stamps: list[str] = []
+    current = start
+    step = timedelta(seconds=cadence_s)
+    while current <= end:
+        stamps.append(current.strftime("%Y%m%d_%H%M%S"))
+        current += step
+    return stamps
+
+
 def timestamp_from_ms_name(path: Path) -> str | None:
     match = TIMESTAMP_RE.match(path.name)
     if match is None:
@@ -145,13 +175,15 @@ def timestamp_from_ms_name(path: Path) -> str | None:
     return match.group("stamp")
 
 
-def source_ms_path(slow_root: Path, band: str, timestamp: str) -> Path:
+def source_ms_path(slow_root: Path, band: str, timestamp: str, source_layout: str = "structured") -> Path:
+    if source_layout == "flat":
+        return slow_root / f"{timestamp}_{band}.ms"
     dt = parse_timestamp(timestamp)
     return slow_root / band / dt.strftime("%Y-%m-%d") / dt.strftime("%H") / f"{timestamp}_{band}.ms"
 
 
-def source_ms_tar_path(slow_root: Path, band: str, timestamp: str) -> Path:
-    return source_ms_path(slow_root, band, timestamp).with_suffix(".ms.tar")
+def source_ms_tar_path(slow_root: Path, band: str, timestamp: str, source_layout: str = "structured") -> Path:
+    return source_ms_path(slow_root, band, timestamp, source_layout).with_suffix(".ms.tar")
 
 
 def is_dir_safe(path: Path) -> bool:
@@ -170,20 +202,25 @@ def is_file_safe(path: Path) -> bool:
         return False
 
 
-def source_ms_input_path(slow_root: Path, band: str, timestamp: str) -> Path | None:
-    ms_path = source_ms_path(slow_root, band, timestamp)
+def source_ms_input_path(slow_root: Path, band: str, timestamp: str, source_layout: str = "structured") -> Path | None:
+    ms_path = source_ms_path(slow_root, band, timestamp, source_layout)
     if is_dir_safe(ms_path):
         return ms_path
-    tar_path = source_ms_tar_path(slow_root, band, timestamp)
+    tar_path = source_ms_tar_path(slow_root, band, timestamp, source_layout)
     if is_file_safe(tar_path):
         return tar_path
     return None
 
 
-def available_band_paths(slow_root: Path, bands: Sequence[str], timestamp: str) -> dict[str, Path]:
+def available_band_paths(
+    slow_root: Path,
+    bands: Sequence[str],
+    timestamp: str,
+    source_layout: str = "structured",
+) -> dict[str, Path]:
     paths: dict[str, Path] = {}
     for band in bands:
-        path = source_ms_input_path(slow_root, band, timestamp)
+        path = source_ms_input_path(slow_root, band, timestamp, source_layout)
         if path is not None:
             paths[band] = path
     return paths
@@ -252,21 +289,24 @@ def realtime_output_paths(proc_out: Path, timestamp: str) -> dict[str, Path]:
         "mfs_v_hdf": proc_out / "mfs" / f"{prefix}_mfs_10s.{stamp}.image_V.hdf",
         "fch_i_fits": proc_out / "fch" / f"{prefix}_fch_10s.{stamp}.image_I.fits",
         "fch_i_hdf": proc_out / "fch" / f"{prefix}_fch_10s.{stamp}.image_I.hdf",
+        "fch_v_fits": proc_out / "fch" / f"{prefix}_fch_10s.{stamp}.image_V.fits",
+        "fch_v_hdf": proc_out / "fch" / f"{prefix}_fch_10s.{stamp}.image_V.hdf",
         "mfs_i_png": proc_out / "fig" / f"{prefix}_mfs_10s.{stamp}.image_I.png",
-        "mfs_vi_png": proc_out / "fig" / f"{prefix}_mfs_10s.{stamp}.image_VI.png",
+        "mfs_v_png": proc_out / "fig" / f"{prefix}_mfs_10s.{stamp}.image_V.png",
     }
 
 
 def copy_available_ms_inputs(
     *,
     slow_root: Path,
+    source_layout: str,
     bands: Sequence[str],
     timestamp: str,
     input_dir: Path,
 ) -> tuple[str, ...]:
     input_dir.mkdir(parents=True, exist_ok=True)
     copied: list[str] = []
-    for band, src in sorted(available_band_paths(slow_root, bands, timestamp).items()):
+    for band, src in sorted(available_band_paths(slow_root, bands, timestamp, source_layout).items()):
         copy_ms_input(src, input_dir)
         copied.append(band)
     return tuple(copied)
@@ -339,10 +379,12 @@ def publish_outputs(task_dir: Path, proc_out: Path, timestamp: str) -> tuple[str
         "mfs_i_fits": combined_dir / "combined_mfs_I.fits",
         "mfs_v_fits": combined_dir / "combined_mfs_V.fits",
         "fch_i_fits": combined_dir / "combined_fch_I.fits",
+        "fch_v_fits": combined_dir / "combined_fch_V.fits",
         "mfs_i_png": combined_dir / "combined_mfs_I.default_plot.png",
-        "mfs_vi_png": combined_dir / "combined_mfs_VI.default_plot.png",
+        "mfs_v_png": combined_dir / "combined_mfs_V.default_plot.png",
     }
-    missing = [str(path) for path in source_products.values() if not path.exists()]
+    required_keys = ("mfs_i_fits", "mfs_v_fits", "fch_i_fits", "mfs_i_png", "mfs_v_png")
+    missing = [str(source_products[key]) for key in required_keys if not source_products[key].exists()]
     if missing:
         raise FileNotFoundError(f"Missing combined products: {missing}")
 
@@ -354,8 +396,11 @@ def publish_outputs(task_dir: Path, proc_out: Path, timestamp: str) -> tuple[str
     published.append(atomic_compress_fits(outputs["mfs_v_fits"], outputs["mfs_v_hdf"]))
     published.append(atomic_copy(source_products["fch_i_fits"], outputs["fch_i_fits"]))
     published.append(atomic_compress_fits(outputs["fch_i_fits"], outputs["fch_i_hdf"]))
+    if source_products["fch_v_fits"].exists():
+        published.append(atomic_copy(source_products["fch_v_fits"], outputs["fch_v_fits"]))
+        published.append(atomic_compress_fits(outputs["fch_v_fits"], outputs["fch_v_hdf"]))
     published.append(atomic_copy(source_products["mfs_i_png"], outputs["mfs_i_png"]))
-    published.append(atomic_copy(source_products["mfs_vi_png"], outputs["mfs_vi_png"]))
+    published.append(atomic_copy(source_products["mfs_v_png"], outputs["mfs_v_png"]))
     summary_path = run_dir / "preprocessing_and_imaging_summary.tsv"
     if summary_path.exists():
         published.append(atomic_copy(summary_path, proc_out / "log" / f"{timestamp}.summary.tsv"))
@@ -389,6 +434,7 @@ def run_worker_task(timestamp: str, config: WorkerConfig) -> WorkerResult:
             ):
                 copied_bands = copy_available_ms_inputs(
                     slow_root=config.slow_root,
+                    source_layout=config.source_layout,
                     bands=config.bands,
                     timestamp=timestamp,
                     input_dir=input_dir,
@@ -403,6 +449,7 @@ def run_worker_task(timestamp: str, config: WorkerConfig) -> WorkerResult:
                     threads=config.threads,
                     copy_ms=False,
                     plot_mfs_i=True,
+                    fch_pols=config.fch_pols,
                 )
                 results = process_fullband(
                     input_dir,
@@ -420,7 +467,8 @@ def run_worker_task(timestamp: str, config: WorkerConfig) -> WorkerResult:
 
                 output_paths = publish_outputs(task_dir, config.proc_out, timestamp)
 
-        shutil.rmtree(task_dir)
+        if config.worker_rm_tmp:
+            shutil.rmtree(task_dir)
         return WorkerResult(
             timestamp=timestamp,
             worker_id=config.worker_id,
@@ -431,7 +479,7 @@ def run_worker_task(timestamp: str, config: WorkerConfig) -> WorkerResult:
             work_dir=str(task_dir),
         )
     except Exception as exc:
-        if config.cleanup_failed and task_dir.exists():
+        if (config.worker_rm_tmp or config.cleanup_failed) and task_dir.exists():
             shutil.rmtree(task_dir)
         return WorkerResult(
             timestamp=timestamp,
@@ -447,7 +495,9 @@ def run_worker_task(timestamp: str, config: WorkerConfig) -> WorkerResult:
 
 class RealtimeManager:
     def __init__(self, args: argparse.Namespace) -> None:
+        self.mode = normalize_mode(args.mode)
         self.slow_root = args.slow_root.expanduser().resolve()
+        self.source_layout = "flat" if self.mode == "event" else "structured"
         self.proc_tmp = args.proc_tmp.expanduser().resolve()
         self.proc_out = args.proc_out.expanduser().resolve()
         self.caltable_dir = args.caltable_dir.expanduser().resolve()
@@ -461,10 +511,14 @@ class RealtimeManager:
         self.scan_interval = args.scan_interval
         self.scan_lookback_hours = args.scan_lookback_hours
         self.start_timestamp = args.start_timestamp
+        self.end_timestamp = args.end_timestamp
+        self.cadence_s = args.cadence_s
         self.workers = args.workers
         self.pipeline_jobs = args.pipeline_jobs
         self.threads = args.threads
+        self.fch_pols = args.fch_pols
         self.cleanup_failed = args.cleanup_failed
+        self.worker_rm_tmp = args.worker_rm_tmp
         self.once = args.once
         self.max_tasks = args.max_tasks
         self.notifier = SystemdNotifier()
@@ -477,6 +531,13 @@ class RealtimeManager:
         self.stop_requested = False
         self.completed_count = 0
         self.scanned_once = False
+        self.static_scan_index = 0
+        self.static_scan_exhausted = False
+        self.static_timestamps = (
+            timestamp_sequence(self.start_timestamp, self.end_timestamp, self.cadence_s)
+            if self.mode in {"backlog", "event"}
+            else []
+        )
         self.last_dispatch_monotonic: float | None = None
 
         self.output_dirs = ensure_output_dirs(self.proc_out)
@@ -492,10 +553,15 @@ class RealtimeManager:
         signal.signal(signal.SIGTERM, self.request_stop)
 
     def scan_once(self) -> None:
+        if self.mode in {"backlog", "event"}:
+            self.scan_static_range_once()
+            return
+        self.scan_realtime_once()
+
+    def scan_realtime_once(self) -> None:
         if len(self.queue) >= self.queue_length:
             logging.debug("Queue already full; skipping scan")
             return
-        queued_this_scan = 0
         discovered = discover_trigger_timestamps(self.slow_root, self.trigger_band, self.scan_lookback_hours)
         if self.start_timestamp is not None:
             discovered = [timestamp for timestamp in discovered if timestamp >= self.start_timestamp]
@@ -509,31 +575,75 @@ class RealtimeManager:
                 self.el_valid,
             )
 
+        candidates: list[tuple[str, dict[str, Path]]] = []
         for timestamp in discovered:
             if timestamp in self.queued or timestamp in self.running or timestamp in self.done or timestamp in self.failed:
                 continue
-            available = available_band_paths(self.slow_root, self.bands, timestamp)
+            available = available_band_paths(self.slow_root, self.bands, timestamp, self.source_layout)
             if len(available) < self.ready_min_bands:
                 continue
-            if len(self.queue) >= self.queue_length:
-                logging.info("Queue reached capacity; leaving later timestamps for future scans")
-                break
-            task = RealtimeTask(
-                timestamp=timestamp,
-                discovered_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            )
-            self.queue.append(task)
-            self.queued.add(timestamp)
-            queued_this_scan += 1
+            candidates.append((timestamp, available))
+
+        remaining_slots = self.queue_length - len(self.queue)
+        selected = candidates[-remaining_slots:] if remaining_slots > 0 else []
+        for timestamp, available in selected:
+            self.queue_task(timestamp, available)
+        if len(candidates) > len(selected):
             logging.info(
-                "Queued %s with %d visible bands: %s",
-                timestamp,
-                len(available),
-                ",".join(sorted(available)),
+                "Skipped %d older ready timestamp(s) to keep realtime queue on latest data",
+                len(candidates) - len(selected),
             )
-            if len(self.queue) >= self.queue_length:
-                logging.info("Queue reached capacity after adding %d task(s)", queued_this_scan)
-                break
+
+    def scan_static_range_once(self) -> None:
+        if len(self.queue) >= self.queue_length or self.static_scan_exhausted:
+            return
+        while len(self.queue) < self.queue_length and self.static_scan_index < len(self.static_timestamps):
+            timestamp = self.static_timestamps[self.static_scan_index]
+            self.static_scan_index += 1
+            if timestamp in self.queued or timestamp in self.running or timestamp in self.done or timestamp in self.failed:
+                continue
+            available = available_band_paths(self.slow_root, self.bands, timestamp, self.source_layout)
+            if len(available) < self.ready_min_bands:
+                self.failed.add(timestamp)
+                logging.error(
+                    "Missing data for %s: visible bands %d/%d below ready-min-bands=%d",
+                    timestamp,
+                    len(available),
+                    len(self.bands),
+                    self.ready_min_bands,
+                )
+                continue
+            self.queue_task(timestamp, available)
+        if self.static_scan_index >= len(self.static_timestamps):
+            self.static_scan_exhausted = True
+
+    def queue_task(self, timestamp: str, available: Mapping[str, Path]) -> None:
+        if len(self.queue) >= self.queue_length:
+            logging.info("Queue reached capacity; leaving later timestamps for future scans")
+            return
+        task = RealtimeTask(
+            timestamp=timestamp,
+            discovered_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        )
+        self.queue.append(task)
+        self.queued.add(timestamp)
+        logging.info(
+            "Queued %s with %d visible bands: %s",
+            timestamp,
+            len(available),
+            ",".join(sorted(available)),
+        )
+
+    def dispatch_threshold(self) -> int:
+        if self.mode in {"backlog", "event"} and self.static_scan_exhausted:
+            return 1
+        return self.dispatch_min_queue
+
+    def scan_is_complete(self) -> bool:
+        return self.mode in {"backlog", "event"} and self.static_scan_exhausted
+
+    def can_start_more_tasks(self, futures: Mapping[Future[WorkerResult], tuple[int, str]]) -> bool:
+        return self.max_tasks is None or self.completed_count + len(futures) < self.max_tasks
 
     def dispatch_ready(
         self,
@@ -541,10 +651,10 @@ class RealtimeManager:
         idle_workers: list[int],
         futures: dict[Future[WorkerResult], tuple[int, str]],
     ) -> None:
-        if len(self.queue) < self.dispatch_min_queue:
+        if len(self.queue) < self.dispatch_threshold():
             return
         while idle_workers and self.queue:
-            if self.max_tasks is not None and self.completed_count + len(futures) >= self.max_tasks:
+            if not self.can_start_more_tasks(futures):
                 break
             multiple_idle = len(idle_workers) > 1
             now = time.monotonic()
@@ -561,6 +671,7 @@ class RealtimeManager:
             self.running.add(task.timestamp)
             worker_config = WorkerConfig(
                 slow_root=self.slow_root,
+                source_layout=self.source_layout,
                 proc_tmp=self.proc_tmp,
                 proc_out=self.proc_out,
                 caltable_dir=self.caltable_dir,
@@ -568,7 +679,9 @@ class RealtimeManager:
                 worker_id=worker_id,
                 pipeline_jobs=self.pipeline_jobs,
                 threads=self.threads,
+                fch_pols=self.fch_pols,
                 cleanup_failed=self.cleanup_failed,
+                worker_rm_tmp=self.worker_rm_tmp,
             )
             future = executor.submit(run_worker_task, task.timestamp, worker_config)
             futures[future] = (worker_id, task.timestamp)
@@ -624,6 +737,8 @@ class RealtimeManager:
             return not futures
         if self.max_tasks is not None and self.completed_count >= self.max_tasks:
             return not futures
+        if self.mode in {"backlog", "event"}:
+            return self.static_scan_exhausted and not futures and not self.queue
         if self.once:
             return not futures and (not self.queue or len(self.queue) < self.dispatch_min_queue)
         return False
@@ -631,7 +746,13 @@ class RealtimeManager:
     def run(self) -> int:
         self.install_signal_handlers()
         self.notifier.notify("READY=1")
-        logging.info("Realtime manager started; slow_root=%s bands=%s", self.slow_root, ",".join(self.bands))
+        logging.info(
+            "Task manager started; mode=%s source_layout=%s data_root=%s bands=%s",
+            self.mode,
+            self.source_layout,
+            self.slow_root,
+            ",".join(self.bands),
+        )
         idle_workers = list(range(self.workers))
         futures: dict[Future[WorkerResult], tuple[int, str]] = {}
 
@@ -639,8 +760,8 @@ class RealtimeManager:
             while True:
                 can_scan = (
                     not self.stop_requested
-                    and (not self.once or not self.scanned_once)
-                    and (self.max_tasks is None or self.completed_count + len(futures) < self.max_tasks)
+                    and (self.mode in {"backlog", "event"} or not self.once or not self.scanned_once)
+                    and self.can_start_more_tasks(futures)
                 )
                 if can_scan:
                     self.scan_once()
@@ -650,16 +771,15 @@ class RealtimeManager:
                 self.handle_finished(futures, idle_workers)
 
                 self.notifier.notify(
-                    f"STATUS=queue={len(self.queue)} running={len(futures)} "
+                    f"STATUS=mode={self.mode} queue={len(self.queue)} running={len(futures)} "
                     f"done={len(self.done)} failed={len(self.failed)}"
                 )
                 if self.should_stop_loop(futures):
                     break
                 time.sleep(self.scan_interval)
 
-        logging.info("Realtime manager stopped; done=%d failed=%d", len(self.done), len(self.failed))
+        logging.info("Task manager stopped; done=%d failed=%d", len(self.done), len(self.failed))
         return 1 if self.failed else 0
-
 
 def setup_logging(proc_out: Path) -> None:
     log_dir = proc_out / "log"
@@ -681,17 +801,23 @@ def setup_logging(proc_out: Path) -> None:
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Manage realtime OVRO-LWA fullband solar processing tasks.",
+        description="Manage OVRO-LWA fullband solar processing tasks.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--slow-root", type=Path, default=Path("/lustre/pipeline/slow"))
+    parser.add_argument(
+        "--mode",
+        choices=["realtime", "realtime-mode", "backlog", "backlog-mode", "event", "event-mode", "event-data-proc-mode"],
+        default="realtime",
+        help="Task source mode. backlog uses the structured slow-data tree over a fixed time range; realtime follows latest elevated slow-data frames; event uses a flat data directory over a fixed time range.",
+    )
+    parser.add_argument("--slow-root", "--data-root", "--data-dir", dest="slow_root", type=Path, default=Path("/lustre/pipeline/slow"))
     parser.add_argument("--proc-tmp", type=Path, default=Path("./proc_tmp"))
     parser.add_argument("--proc-out", type=Path, default=Path("./proc_out"))
     parser.add_argument("--caltable-dir", type=Path, default=Path("/fast/rtpipe/caltab_h5parm"))
     parser.add_argument("--bands", default=",".join(PRODUCTION_BANDS))
     parser.add_argument("--trigger-band", default="55MHz")
     parser.add_argument("--workers", type=int, default=4)
-    parser.add_argument("--queue-length", type=int, default=8)
+    parser.add_argument("--queue-length", type=int, help="Maximum queued timestamps. Defaults to workers + 3.")
     parser.add_argument("--dispatch-min-queue", type=int, default=3)
     parser.add_argument(
         "--dispatch-stagger-s",
@@ -704,17 +830,31 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--scan-interval", type=float, default=5.0)
     parser.add_argument("--scan-lookback-hours", type=int, default=1)
     parser.add_argument("--start-timestamp", help="Only consider timestamps at or after YYYYMMDD_HHMMSS.")
+    parser.add_argument("--end-timestamp", help="Last timestamp for backlog/event modes, in YYYYMMDD_HHMMSS.")
+    parser.add_argument("--cadence-s", type=float, default=10.0, help="Timestamp cadence in seconds for backlog/event modes.")
     parser.add_argument("--pipeline-jobs", type=int, default=13)
     parser.add_argument("--threads", type=int, default=18)
+    parser.add_argument("--fch-pols", default="I", help="Comma-separated polarizations for the fine-channel WSClean pass, for example I or I,V.")
     parser.add_argument("--cleanup-failed", action="store_true")
+    parser.add_argument(
+        "--worker-rm-tmp",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Remove a worker's per-job proc_tmp directory before the worker becomes available for another job.",
+    )
     parser.add_argument("--once", action="store_true", help="Scan once and exit after dispatchable work finishes.")
     parser.add_argument("--max-tasks", type=int, help="Stop after this many worker tasks complete.")
     return parser.parse_args(argv)
 
 
 def validate_args(args: argparse.Namespace) -> None:
+    args.mode = normalize_mode(args.mode)
+    if args.mode not in {"realtime", "backlog", "event"}:
+        raise ValueError(f"Invalid mode: {args.mode}")
     if args.workers < 1:
         raise ValueError("--workers must be at least 1")
+    if args.queue_length is None:
+        args.queue_length = args.workers + 3
     if args.queue_length < 1:
         raise ValueError("--queue-length must be at least 1")
     if args.dispatch_min_queue < 1:
@@ -727,8 +867,16 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--ready-min-bands must be at least 1")
     if args.start_timestamp is not None:
         parse_timestamp(args.start_timestamp)
+    if args.end_timestamp is not None:
+        parse_timestamp(args.end_timestamp)
+    if args.cadence_s <= 0:
+        raise ValueError("--cadence-s must be positive")
+    if args.mode in {"backlog", "event"}:
+        if args.start_timestamp is None or args.end_timestamp is None:
+            raise ValueError("--start-timestamp and --end-timestamp are required for backlog/event modes")
+        timestamp_sequence(args.start_timestamp, args.end_timestamp, args.cadence_s)
     bands = parse_bands(args.bands)
-    if args.trigger_band not in bands:
+    if args.mode == "realtime" and args.trigger_band not in bands:
         raise ValueError("--trigger-band must be included in --bands")
     if args.ready_min_bands > len(bands):
         raise ValueError("--ready-min-bands cannot exceed the number of configured bands")

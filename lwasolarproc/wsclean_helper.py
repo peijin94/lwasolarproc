@@ -28,7 +28,7 @@ class WSCleanOptions:
     threads: int = 18
     mem_percent: int = 8
     size: int = 384
-    scale: str = "1.5arcmin"
+    scale: str = "1.8arcmin"
     auto_pix_fov: bool = False
     auto_telescope_size_m: float = 2500.0
     auto_im_fov_arcsec: float = 182.0 * 3600.0

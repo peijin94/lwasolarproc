@@ -238,7 +238,7 @@ def _corner_noise_sigma(image: np.ndarray, corner_size: int = 56) -> float:
 def slow_pipeline_default_plot(
     fname,
     freqs_plt: Sequence[float] = (34.1, 38.7, 43.2, 47.8, 52.4, 57.0, 61.6, 66.2, 70.8, 75.4, 80.0, 84.5),
-    fov: float = 7998,
+    fov: float = 14400,
     add_logo: bool = True,
     interpolation: str = "bicubic",
     apply_refraction_param: bool = False,
@@ -318,7 +318,7 @@ def slow_pipeline_default_plot(
                 vmax=vmaxplt,
                 interpolation=interpolation,
             )
-            _plot_solar_limb(ax, solar_map, channel_header, color="k", alpha=1.0, lw=1.6, linestyle=(0, (1.0, 2.2)))
+            _plot_solar_limb(ax, solar_map, channel_header, color="0.5", alpha=1.0, lw=1.0)
             _set_solar_axes_fov(ax, fov, x_shift=x_shift, y_shift=y_shift)
 
             bmaj = _safe_channel(meta, "bmaj", bd, 0.0)
@@ -380,7 +380,7 @@ def slow_pipeline_default_polarization_plot(
     i_fname,
     v_fname,
     freqs_plt: Sequence[float] = (34.1, 38.7, 43.2, 47.8, 52.4, 57.0, 61.6, 66.2, 70.8, 75.4, 80.0, 84.5),
-    fov: float = 7998,
+    fov: float = 14400,
     add_logo: bool = True,
     interpolation: str = "bicubic",
     apply_refraction_param: bool = False,
@@ -452,7 +452,7 @@ def slow_pipeline_default_polarization_plot(
                 vmax=abs_vmax,
                 interpolation=interpolation,
             )
-            _plot_solar_limb(ax, solar_map, channel_header, color="k", alpha=1.0, lw=1.4)
+            _plot_solar_limb(ax, solar_map, channel_header, color="0.5", alpha=1.0, lw=1.0)
             _set_solar_axes_fov(ax, fov, x_shift=x_shift, y_shift=y_shift)
 
             bmaj = _safe_channel(meta_i, "bmaj", bd, 0.0)

@@ -11,7 +11,7 @@ This module ports the active test full-band workflow into package code:
 6. remove bright sources farther than the configured Sun exclusion radius
 7. chgcentre to the Sun
 8. DP3 average again
-9. WSClean MFS Stokes I/V and fine-channel Stokes I FITS imaging
+9. WSClean MFS Stokes I/V and optional fine-channel Stokes products
 10. convert J2000 FITS products to helioprojective coordinates and combine them
 """
 
@@ -114,7 +114,7 @@ class PipelineConfig:
     model_auto_min_size: int | None = None
     mfs_pols: str = "I,V"
     run_fine_channel: bool = True
-    fch_pol: str = "I"
+    fch_pols: str = "I"
     fch_channels_out: int = 12
     fch_deconvolution_channels: int | None = None
     fch_fit_spectral_pol: int | None = None
@@ -124,7 +124,7 @@ class PipelineConfig:
     postprocess_beam_correction: bool = True
     postprocess_to_kelvin: bool = True
     plot_mfs_i: bool = True
-    plot_mfs_vi: bool = True
+    plot_mfs_v: bool = True
     plot_dpi: int = 150
     wsclean: WSCleanOptions = field(default_factory=WSCleanOptions)
 
@@ -787,13 +787,26 @@ def run_mfs_wsclean(
     }
 
 
-def collect_channel_image_fits(output_prefix: Path, pol: str) -> list[Path]:
-    candidates = list(output_prefix.parent.glob(f"{output_prefix.name}-*-image.fits"))
-    candidates = [path for path in candidates if "-MFS-" not in path.name]
+def parse_pol_list(pols: str) -> list[str]:
+    return [part.strip().upper() for part in pols.split(",") if part.strip()]
+
+
+def collect_channel_image_fits(output_prefix: Path, pol: str, *, single_pol_run: bool) -> list[Path]:
+    pol = pol.upper()
+    patterns = [
+        f"{output_prefix.name}-[0-9][0-9][0-9][0-9]-{pol}-image.fits",
+        f"{output_prefix.name}-{pol}-[0-9][0-9][0-9][0-9]-image.fits",
+    ]
+    if single_pol_run:
+        patterns.append(f"{output_prefix.name}-[0-9][0-9][0-9][0-9]-image.fits")
+
+    candidates: list[Path] = []
+    for pattern in patterns:
+        candidates.extend(output_prefix.parent.glob(pattern))
     single = expected_image_fits(output_prefix, pol)
     if single.exists():
         candidates.append(single)
-    return sorted({path for path in candidates})
+    return sorted({path for path in candidates if "-MFS-" not in path.name})
 
 
 def run_fine_channel_wsclean(
@@ -801,7 +814,7 @@ def run_fine_channel_wsclean(
     output_prefix: Path,
     config: PipelineConfig,
     timings: dict[str, float],
-) -> list[Path]:
+) -> dict[str, list[Path]]:
     extra_options = dict(config.wsclean.extra_options)
     if config.fch_deconvolution_channels:
         extra_options["deconvolution_channels"] = config.fch_deconvolution_channels
@@ -811,22 +824,27 @@ def run_fine_channel_wsclean(
 
     options = make_wsclean_options(
         config,
-        pol=config.fch_pol,
+        pol=config.fch_pols,
         channels_out=config.fch_channels_out,
         extra_options=extra_options,
-        join_polarizations=False,
     )
     start = time.perf_counter()
     result = run_wsclean(ms_path, output_prefix, options, dry_run=config.dry_run)
     if config.dry_run:
         print(f"[dry-run] {shlex_join(result)}")
     timings["wsclean_fch_i_s"] = time.perf_counter() - start
+    pols = parse_pol_list(config.fch_pols)
     if config.dry_run:
-        return [expected_image_fits(output_prefix, config.fch_pol)]
-    paths = collect_channel_image_fits(output_prefix, config.fch_pol)
-    if not paths:
-        raise FileNotFoundError(f"No fine-channel WSClean FITS products found for prefix {output_prefix}")
-    return paths
+        return {pol.lower(): [expected_image_fits(output_prefix, pol)] for pol in pols}
+
+    products: dict[str, list[Path]] = {}
+    single_pol_run = len(pols) <= 1
+    for pol in pols:
+        paths = collect_channel_image_fits(output_prefix, pol, single_pol_run=single_pol_run)
+        if not paths:
+            raise FileNotFoundError(f"No fine-channel WSClean FITS products found for prefix {output_prefix} pol={pol}")
+        products[pol.lower()] = paths
+    return products
 
 
 def process_band(target: BandTarget, config: PipelineConfig) -> BandResult:
@@ -883,9 +901,11 @@ def process_band(target: BandTarget, config: PipelineConfig) -> BandResult:
             products[f"mfs_{pol}_fits"] = fits_path
 
         if config.run_fine_channel:
-            fch_prefix = image_dir / f"{post_selfcal_ms.stem}_after_{mode_label}_sun_centered_fch_i"
+            fch_label = "_".join(pol.lower() for pol in parse_pol_list(config.fch_pols)) or "i"
+            fch_prefix = image_dir / f"{post_selfcal_ms.stem}_after_{mode_label}_sun_centered_fch_{fch_label}"
             fch_fits = run_fine_channel_wsclean(post_selfcal_ms, fch_prefix, config, timings)
-            products["fch_i_fits"] = fch_fits
+            for pol, fits_paths in fch_fits.items():
+                products[f"fch_{pol}_fits"] = fits_paths
 
         status = "ok"
         error = ""
@@ -993,6 +1013,7 @@ def postprocess_fullband_products(config: PipelineConfig, results: Sequence[Band
         "mfs_I": [path for result in ok_results for path in _as_paths(result.products.get("mfs_i_fits"))],
         "mfs_V": [path for result in ok_results for path in _as_paths(result.products.get("mfs_v_fits"))],
         "fch_I": [path for result in ok_results for path in _as_paths(result.products.get("fch_i_fits"))],
+        "fch_V": [path for result in ok_results for path in _as_paths(result.products.get("fch_v_fits"))],
     }
 
     output_dir = config.work_dir / "combined"
@@ -1006,9 +1027,9 @@ def postprocess_fullband_products(config: PipelineConfig, results: Sequence[Band
     mfs_i_plot = plot_mfs_i_default(config, combined)
     if mfs_i_plot is not None:
         plot_outputs["mfs_I_plot"] = mfs_i_plot
-    mfs_vi_plot = plot_mfs_vi_default(config, combined)
-    if mfs_vi_plot is not None:
-        plot_outputs["mfs_VI_plot"] = mfs_vi_plot
+    mfs_v_plot = plot_mfs_v_default(config, combined)
+    if mfs_v_plot is not None:
+        plot_outputs["mfs_V_plot"] = mfs_v_plot
     write_combined_summary(output_dir, {**combined, **plot_outputs})
     return combined
 
@@ -1039,13 +1060,13 @@ def plot_mfs_i_default(config: PipelineConfig, combined: Mapping[str, Path]) -> 
     return plot_path
 
 
-def plot_mfs_vi_default(config: PipelineConfig, combined: Mapping[str, Path]) -> Path | None:
-    if not config.plot_mfs_vi:
+def plot_mfs_v_default(config: PipelineConfig, combined: Mapping[str, Path]) -> Path | None:
+    if not config.plot_mfs_v:
         return None
     mfs_i = combined.get("mfs_I")
     mfs_v = combined.get("mfs_V")
     if mfs_i is None or mfs_v is None:
-        print("[plot] skip mfs_VI: combined I/V FITS not found")
+        print("[plot] skip mfs_V: combined I/V FITS not found")
         return None
 
     import matplotlib  # type: ignore
@@ -1058,11 +1079,11 @@ def plot_mfs_vi_default(config: PipelineConfig, combined: Mapping[str, Path]) ->
     except ImportError:  # pragma: no cover - supports direct script execution.
         from visualization import slow_pipeline_default_polarization_plot  # type: ignore
 
-    plot_path = mfs_v.with_name("combined_mfs_VI.default_plot.png")
+    plot_path = mfs_v.with_name("combined_mfs_V.default_plot.png")
     fig, _ = slow_pipeline_default_polarization_plot(str(mfs_i), str(mfs_v))
     fig.savefig(plot_path, dpi=config.plot_dpi)
     plt.close(fig)
-    print(f"[plot] mfs_VI default plot={plot_path}")
+    print(f"[plot] mfs_V default plot={plot_path}")
     return plot_path
 
 
@@ -1141,6 +1162,8 @@ def write_summary(work_dir: Path, results: Sequence[BandResult]) -> Path:
         "mfs_v_fits",
         "fch_i_fits",
         "fch_i_fits_count",
+        "fch_v_fits",
+        "fch_v_fits_count",
         "error",
     ]
     lines = ["\t".join(header)]
@@ -1168,6 +1191,8 @@ def write_summary(work_dir: Path, results: Sequence[BandResult]) -> Path:
             _fmt_product(result.products.get("mfs_v_fits")),
             _fmt_product(result.products.get("fch_i_fits")),
             str(len(_as_paths(result.products.get("fch_i_fits")))),
+            _fmt_product(result.products.get("fch_v_fits")),
+            str(len(_as_paths(result.products.get("fch_v_fits")))),
             result.error,
         ]
         lines.append("\t".join(row))
@@ -1263,7 +1288,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--wsclean-bin", default="wsclean")
     parser.add_argument("--image-size", type=int, default=384)
-    parser.add_argument("--scale", default="1.5arcmin")
+    parser.add_argument("--scale", default="1.8arcmin")
     parser.add_argument(
         "--model-auto-pix-fov",
         "--auto-pix-fov",
@@ -1320,7 +1345,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--minuv-l", type=float, default=10.0)
     parser.add_argument("--beam-fitting-size", type=int, default=2)
     parser.add_argument("--mfs-pols", default="I,V", help="Comma-separated polarizations for the MFS WSClean pass.")
-    parser.add_argument("--no-fine-channel", action="store_true", help="Skip the fine-channel Stokes I WSClean pass.")
+    parser.add_argument("--no-fine-channel", action="store_true", help="Skip the fine-channel WSClean pass.")
+    parser.add_argument("--fch-pols", default="I", help="Comma-separated polarizations for the fine-channel WSClean pass, for example I or I,V.")
     parser.add_argument("--fch-channels-out", type=int, default=12, help="WSClean channels-out for the fine-channel pass.")
     parser.add_argument(
         "--fch-deconvolution-channels",
@@ -1387,6 +1413,7 @@ def config_from_args(args: argparse.Namespace) -> PipelineConfig:
         model_auto_min_size=args.model_auto_min_size,
         mfs_pols=args.mfs_pols,
         run_fine_channel=not args.no_fine_channel,
+        fch_pols=args.fch_pols,
         fch_channels_out=args.fch_channels_out,
         fch_deconvolution_channels=args.fch_deconvolution_channels,
         fch_fit_spectral_pol=args.fch_fit_spectral_pol,

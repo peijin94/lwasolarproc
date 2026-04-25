@@ -8,7 +8,7 @@ This document is the technical memory for the current `lwasolarproc` package sta
 
 1. full-band preprocessing and imaging from per-band Measurement Sets
 2. FITS post-processing, helioprojective conversion, and HDF5 compression
-3. publication-quality quicklook visualization for Stokes `I` and `V/I`
+3. publication-quality quicklook visualization for Stokes `I` and `V`
 4. a realtime orchestrator that watches the Lustre slow-data tree and dispatches bounded full-band jobs to worker processes
 
 The package is intentionally built without CASA runtime dependencies in the main path. It uses:
@@ -54,7 +54,7 @@ Important Python modules:
 - `lwasolarproc/coords.py`
   - J2000 to helioprojective conversion and beam/K correction
 - `lwasolarproc/visualization.py`
-  - default Stokes `I` and `V/I` quicklooks
+  - default Stokes `I` and `V` quicklooks
 - `lwasolarproc/util.py`
   - HDF5 compression/recovery and realtime helper utilities
 - `lwasolarproc/source_list.py`
@@ -125,16 +125,17 @@ The current packaged full-band path is:
 7. shift phase center to the Sun
 8. average by `avg_chanbin=4` again
 9. image MFS Stokes `I,V`
-10. optionally image fine-channel Stokes `I`
+10. optionally image fine-channel Stokes products, default `I` and optionally `I,V`
 11. convert J2000 FITS products to helioprojective coordinates
 12. apply primary-beam correction and Kelvin conversion in the helio conversion step
 13. combine the per-band FITS into:
     - `combined_mfs_I.fits`
     - `combined_mfs_V.fits`
     - `combined_fch_I.fits`
+    - optional `combined_fch_V.fits`
 14. create default quicklook plots:
     - `combined_mfs_I.default_plot.png`
-    - `combined_mfs_VI.default_plot.png`
+    - `combined_mfs_V.default_plot.png`
 
 The pipeline is implemented in `process_fullband()` inside [preprocessing_and_imaging.py](/fast/rtpipe/lwasolarproc/lwasolarproc/preprocessing_and_imaging.py).
 
@@ -158,14 +159,14 @@ Important defaults:
 - `bright_source_min_distance_deg=6.0`
 - `mfs_pols="I,V"`
 - `run_fine_channel=True`
-- `fch_pol="I"`
+- `fch_pols="I"`
 - `fch_channels_out=12`
 - `postprocess_cutout_size=256`
 - `postprocess_usebeam="Memo178Beam"`
 - `postprocess_beam_correction=True`
 - `postprocess_to_kelvin=True`
 - `plot_mfs_i=True`
-- `plot_mfs_vi=True`
+- `plot_mfs_v=True`
 
 These defaults matter because the package is not exposing every lower-level tool setting directly on the command line. The `PipelineConfig` object is the main place where benchmarked defaults are fixed.
 
@@ -275,7 +276,7 @@ Current final solar imaging defaults:
 - `-j 18`
 - `-mem 8`
 - `-size 384 384`
-- `-scale 1.5arcmin`
+- `-scale 1.8arcmin`
 - `-weight briggs -0.5`
 - `-minuv-l 10`
 - `-auto-threshold 3`
@@ -293,13 +294,14 @@ MFS imaging:
 
 Fine-channel imaging:
 
-- Stokes: `I`
+- Stokes: `I` by default
+- optional Stokes `I,V` with `--fch-pols I,V`
 - `channels_out=12`
 - current package state does not use the earlier attempted deconvolution-channel split because it hurt performance
 
 The package currently favors low-stdout operation. `quiet=True` is wired through the WSClean options so worker logs stay useful and tool overhead stays low.
 
-Auto pixel/FOV geometry is deliberately restricted to the temporary model-imaging stages used by phase selfcal and bright-source source-list generation. The final small-FOV solar MFS/FCH products keep the fixed `384 x 384`, `1.5arcmin` geometry so the downstream helio cutout and combined FITS products remain stable.
+Auto pixel/FOV geometry is deliberately restricted to the temporary model-imaging stages used by phase selfcal and bright-source source-list generation. The final small-FOV solar MFS/FCH products keep the fixed `384 x 384`, `1.8arcmin` geometry so the downstream helio cutout and combined FITS products remain stable.
 
 ## Coordinate Conversion and Beam Correction
 
@@ -365,7 +367,7 @@ Two default quicklooks matter operationally:
 1. `slow_pipeline_default_plot()`
    - 12-panel MFS Stokes `I`
 2. `slow_pipeline_default_polarization_plot()`
-   - 12-panel MFS `V/I`
+   - 12-panel MFS `V`
 
 ### Default Stokes I Plot
 
@@ -373,13 +375,14 @@ The Stokes `I` plot:
 
 - uses `sunpy.map`
 - assumes helioprojective FITS products
+- uses a default field of view of `+-7200 arcsec`
 - uses smoothed `imshow` interpolation instead of blocky nearest-pixel rendering
 - overlays the solar limb and restoring beam
 - includes NJIT and Caltech logos embedded as base64 strings in the module
 
 ### Default Stokes V Plot
 
-The polarization quicklook keeps the historical `image_VI.png` filename but currently plots Stokes `V` directly rather than a masked `V/I` ratio.
+The polarization quicklook uses the `image_V.png` filename and plots Stokes `V` directly in MK.
 
 Current behavior:
 
@@ -409,6 +412,26 @@ Important dataclasses:
 - `WorkerResult`
   - task status, elapsed wall time, copied bands, outputs, and error text
 
+### Operating Modes
+
+The task manager supports three modes:
+
+- `realtime`
+  - structured source layout under `/lustre/pipeline/slow/BAND/YYYY-MM-DD/HH/`
+  - scans the trigger band repeatedly
+  - applies the OVRO solar elevation threshold
+  - chooses the newest ready timestamps when the queue has limited room, so it tries to keep up with live data rather than drain old backlog
+- `backlog`
+  - structured source layout under `/lustre/pipeline/slow/BAND/YYYY-MM-DD/HH/`
+  - uses `--start-timestamp`, `--end-timestamp`, and `--cadence-s` to generate all timestamps to process
+  - does not apply the elevation gate
+  - drains the generated timestamp list, including the tail below `dispatch-min-queue`
+- `event`
+  - flat source layout under a user-provided `--data-dir`
+  - uses `--start-timestamp`, `--end-timestamp`, and `--cadence-s` to generate all timestamps to process
+  - expects names such as `YYYYMMDD_HHMMSS_BAND.ms` or `YYYYMMDD_HHMMSS_BAND.ms.tar` directly in that folder
+  - does not apply the elevation gate
+
 ### Discovery Model
 
 The manager scans the trigger-band tree:
@@ -434,9 +457,11 @@ For every configured production band, availability accepts either an unpacked Me
 
 Workers always stage inputs into `proc_tmp`. Unpacked `.ms` inputs are copied with `shutil.copytree()`. Archived `.ms.tar` inputs are copied into the worker `input_ms` directory first, then safely untarred there before pipeline discovery runs. The copied archive is removed after successful extraction so memdisk scratch does not keep both archive and extracted Measurement Set.
 
+In event mode, the same file/directory names are searched directly under `--data-dir`; no band/date/hour subdirectories are used.
+
 ### Queue Admission Rules
 
-A timestamp is queued only if all of the following pass:
+A realtime timestamp is queued only if all of the following pass:
 
 1. it is within the scan lookback window
 2. it is not older than `--start-timestamp`, if that filter is set
@@ -446,6 +471,8 @@ A timestamp is queued only if all of the following pass:
 6. the queue is not already at `--queue-length`
 
 The solar-elevation filter was added after a live replay produced empty images because low-elevation timestamps were admitted purely by trigger-band presence.
+
+In backlog and event modes, timestamps come from the generated `start/end/cadence` sequence. Those modes skip the solar-elevation filter and process the sequence in chronological order. If a generated timestamp has fewer than `--ready-min-bands` visible inputs, it is marked failed in the manager log rather than being waited on forever.
 
 ### OVRO Solar-Elevation Helper
 
@@ -488,9 +515,9 @@ Each worker:
 4. publishes the combined products
 5. compresses FITS outputs into HDF5
 6. copies quicklook PNGs and summary TSVs into `proc_out`
-7. removes the temporary work directory on success
+7. removes the temporary work directory before returning the worker to the idle pool when `--worker-rm-tmp` is enabled
 
-If `--cleanup-failed` is enabled, failed worker directories are also removed.
+`--worker-rm-tmp` is enabled by default, so successful and failed per-job scratch directories are removed unless the run explicitly uses `--no-worker-rm-tmp`. `--cleanup-failed` remains available for the older behavior where failed directories are removed even if worker tmp cleanup is disabled.
 
 Worker subprocess stdout and stderr are redirected into per-worker log files so the manager log stays readable.
 
@@ -504,9 +531,11 @@ Published output names follow:
   - `ovro-lwa-352.lev1.5_mfs_10s.YYYY-MM-DDTHHMMSSZ.image_V.fits`
 - FCH I FITS:
   - `ovro-lwa-352.lev1.5_fch_10s.YYYY-MM-DDTHHMMSSZ.image_I.fits`
+- optional FCH V FITS:
+  - `ovro-lwa-352.lev1.5_fch_10s.YYYY-MM-DDTHHMMSSZ.image_V.fits`
 - quicklooks:
   - `...image_I.png`
-  - `...image_VI.png`
+  - `...image_V.png`
 
 Output directories:
 
@@ -538,7 +567,7 @@ Current packaged defaults are:
 - production bands:
   - `23,32,36,41,46,50,55,59,64,69,73,78,82 MHz`
 - workers: `4`
-- queue length: `8`
+- queue length: `workers + 3` (`7` for the default `4` workers)
 - dispatch minimum queue: `3`
 - dispatch stagger: `15 s`
 - ready minimum bands: `7`
@@ -618,7 +647,7 @@ Settings:
 - worker scratch: `/dev/shm/tmp_pipe_dir/proc_realtime_20260424_2000_18f_5w/proc_tmp`
 - output root: `/fast/rtpipe/proc_realtime_20260424_2000_18f_5w_memtmp/proc_out`
 - model auto geometry: `2500 m`, `2.2`, `182 deg`
-- final solar geometry: fixed `384 x 384`, `1.5arcmin`
+- final solar geometry: fixed `384 x 384`, `1.8arcmin`
 
 Observed result:
 
@@ -684,7 +713,7 @@ The current package has reached the point where it can:
 
 - run the full calibrated solar pipeline end to end in packaged form
 - produce science-ready combined MFS/FCH products
-- publish default Stokes `I` and `V/I` quicklooks
+- publish default Stokes `I` and `V` quicklooks
 - drive a bounded realtime replay or service-style queue manager from the slow-data tree
 
 The current technical risk is no longer package shape or missing features. It is operational performance: particularly input copy pressure from Lustre and the remaining uninstrumented overhead outside the band-level timers.

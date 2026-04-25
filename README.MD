@@ -61,9 +61,9 @@ The command wraps the full-band workflow:
 6. build a WSClean source list and subtract bright sources farther than the Sun exclusion radius
 7. recenter on the Sun
 8. average by 4 channels again
-9. image MFS Stokes I/V and fine-channel Stokes I with WSClean
+9. image MFS Stokes I/V and fine-channel Stokes I, with optional fine-channel V, using WSClean
 10. convert J2000 FITS products to helioprojective coordinates with beam/K correction
-11. combine FITS products and write the default MFS Stokes I and MFS V/I quicklook plots
+11. combine FITS products and write the default MFS Stokes I and MFS V quicklook plots
 
 ## Pipeline Workflow
 
@@ -97,7 +97,7 @@ The temporary model-imaging passes used by phase selfcal and bright-source remov
 - pixel scale factor: `2.2`
 - model field of view: `182 deg`
 
-For the current production bands, this gives model-image sizes from about `1200 x 1200` at `23 MHz` to `4050 x 4050` at `82 MHz`. The final small-FOV solar WSClean products do not use auto geometry; they keep the fixed `384 x 384`, `1.5arcmin` image geometry.
+For the current production bands, this gives model-image sizes from about `1200 x 1200` at `23 MHz` to `4050 x 4050` at `82 MHz`. The final small-FOV solar WSClean products do not use auto geometry; they keep the fixed `384 x 384`, `1.8arcmin` image geometry.
 
 Useful source-removal options:
 
@@ -113,11 +113,13 @@ lwasolarproc-fullband \
 
 Use `--no-bright-source-removal` to run the older path without source-list subtraction.
 
-Current default final solar WSClean imaging settings use `-quiet`, `-j 18`, `-mem 8`, `-size 384 384`, `-scale 1.5arcmin`, `-weight briggs -0.5`, `-minuv-l 10`, `-auto-threshold 3`, `-niter 10000`, `-mgain 0.8`, `-beam-fitting-size 2`, `-no-reorder`, `-no-update-model-required`, and `-no-dirty`.
+Current default final solar WSClean imaging settings use `-quiet`, `-j 18`, `-mem 8`, `-size 384 384`, `-scale 1.8arcmin`, `-weight briggs -0.5`, `-minuv-l 10`, `-auto-threshold 3`, `-niter 10000`, `-mgain 0.8`, `-beam-fitting-size 2`, `-no-reorder`, `-no-update-model-required`, and `-no-dirty`.
 
-The 2026-04-19 bright-source fullband benchmark at `/fast/rtpipe/tests/_lwasolarproc_fullband_bright_source_20260419` completed `13/13` bands in `66.97 s` wall time. The per-band average was `56.81 s`, including `21.76 s` for bright source removal, and produced combined MFS I, MFS V, and fine-channel I FITS files plus the default MFS I and MFS V/I plots.
+Fine-channel imaging defaults to Stokes `I`. Use `--fch-pols I,V` to generate fine-channel Stokes `V` products in the same WSClean pass. Realtime mode accepts the same option and publishes optional FCH `V` FITS/HDF products when `combined_fch_V.fits` is produced.
 
-The 2026-04-24 phase-selfcal validation at `/fast/rtpipe/tests/_lwasolarproc_fullband_phase_selfcal_20260424_200004` completed `13/13` bands with `--jobs 4 --no-fine-channel`. The per-band average was `26.09 s`, including `7.39 s` for phase selfcal, `10.26 s` for bright-source removal, and `3.52 s` for MFS Stokes I,V WSClean. It produced combined MFS I/V FITS files and the default MFS I and V/I quicklook plots.
+The 2026-04-19 bright-source fullband benchmark at `/fast/rtpipe/tests/_lwasolarproc_fullband_bright_source_20260419` completed `13/13` bands in `66.97 s` wall time. The per-band average was `56.81 s`, including `21.76 s` for bright source removal, and produced combined MFS I, MFS V, and fine-channel I FITS files plus the default MFS I and MFS V plots.
+
+The 2026-04-24 phase-selfcal validation at `/fast/rtpipe/tests/_lwasolarproc_fullband_phase_selfcal_20260424_200004` completed `13/13` bands with `--jobs 4 --no-fine-channel`. The per-band average was `26.09 s`, including `7.39 s` for phase selfcal, `10.26 s` for bright-source removal, and `3.52 s` for MFS Stokes I,V WSClean. It produced combined MFS I/V FITS files and the default MFS I and V quicklook plots.
 
 ## Realtime Task Manager
 
@@ -125,29 +127,43 @@ The package also installs a service-ready realtime manager:
 
 ```bash
 lwasolarproc-realtime \
+  --mode realtime \
   --slow-root /lustre/pipeline/slow \
   --caltable-dir /fast/rtpipe/caltab_h5parm \
   --proc-tmp ./proc_tmp \
   --proc-out ./proc_out
 ```
 
-The manager watches the UTC slow-data tree through the `55MHz` trigger band, queues a timestamp when more than six configured production bands are visible, and dispatches work to worker slots once at least `--dispatch-min-queue` tasks are queued. Slow-data inputs may be either unpacked `YYYYMMDD_HHMMSS_BAND.ms` directories or `YYYYMMDD_HHMMSS_BAND.ms.tar` archives. Each worker copies all available bands at job start; for `.ms.tar` inputs it first copies the archive into the worker scratch directory, then untars it there before running the fullband pipeline. Workers publish FITS/HDF/PNG products under `proc_out/mfs`, `proc_out/fch`, and `proc_out/fig`, write logs under `proc_out/log`, and remove successful temporary work under `proc_tmp/worker_i/YYYYMMDD_HHMMSS`.
+The manager has three operating modes:
+
+- `--mode backlog`: process a fixed UTC timestamp range from the structured slow-data tree, using `--start-timestamp`, `--end-timestamp`, `--cadence-s`, `--slow-root`, and `--bands`.
+- `--mode realtime`: follow live structured slow-data under `/lustre/pipeline/slow`, admit only timestamps with solar elevation above `--el-valid`, and prefer the latest ready frames so the queue does not turn into a stale backlog.
+- `--mode event`: process a fixed UTC timestamp range from a flat event folder containing files such as `YYYYMMDD_HHMMSS_BAND.ms` or `YYYYMMDD_HHMMSS_BAND.ms.tar`, using `--data-dir`, `--start-timestamp`, `--end-timestamp`, `--cadence-s`, and `--bands`.
+
+In structured modes, the manager watches paths like `/lustre/pipeline/slow/55MHz/YYYY-MM-DD/HH/` through the `55MHz` trigger band. In flat event mode, it looks directly in the provided data directory. Inputs may be either unpacked `YYYYMMDD_HHMMSS_BAND.ms` directories or `YYYYMMDD_HHMMSS_BAND.ms.tar` archives. Each worker copies all available bands at job start; for `.ms.tar` inputs it first copies the archive into the worker scratch directory, then untars it there before running the fullband pipeline. Workers publish FITS/HDF/PNG products under `proc_out/mfs`, `proc_out/fch`, and `proc_out/fig`, write logs under `proc_out/log`, and remove per-job temporary work under `proc_tmp/worker_i/YYYYMMDD_HHMMSS` by default.
 
 Queue admission also applies a solar-elevation gate at OVRO. By default `--el-valid 12` means a timestamp is queued only when the solar elevation is at least `12 deg`. This prevents the realtime pipeline from wasting work on low-elevation frames that tend to produce empty or poor-quality solar images.
 
 By default the realtime figure outputs now include both:
 
 - `ovro-lwa-352.lev1.5_mfs_10s.YYYY-MM-DDTHHMMSSZ.image_I.png`
-- `ovro-lwa-352.lev1.5_mfs_10s.YYYY-MM-DDTHHMMSSZ.image_VI.png`
+- `ovro-lwa-352.lev1.5_mfs_10s.YYYY-MM-DDTHHMMSSZ.image_V.png`
 
-The `image_VI.png` quicklook uses the same 12-panel layout as the MFS I figure but currently plots Stokes `V` in MK, not a masked `V/I` ratio. Each panel annotates `max|V|`, and the color scale is set from the `99.99` percentile of `|V|`.
+Realtime FITS/HDF products are published as:
+
+- `proc_out/mfs/ovro-lwa-352.lev1.5_mfs_10s.YYYY-MM-DDTHHMMSSZ.image_I.fits`
+- `proc_out/mfs/ovro-lwa-352.lev1.5_mfs_10s.YYYY-MM-DDTHHMMSSZ.image_V.fits`
+- `proc_out/fch/ovro-lwa-352.lev1.5_fch_10s.YYYY-MM-DDTHHMMSSZ.image_I.fits`
+- optional with `--fch-pols I,V`: `proc_out/fch/ovro-lwa-352.lev1.5_fch_10s.YYYY-MM-DDTHHMMSSZ.image_V.fits`
+
+The `image_V.png` quicklook uses the same 12-panel layout as the MFS I figure and plots Stokes `V` in MK. Each panel annotates `max|V|`, and the color scale is set from the `99.99` percentile of `|V|`. Both default quicklook layouts use a solar field of view of `+-7200 arcsec`.
 
 Current realtime defaults:
 
 - trigger band: `55MHz`
 - production bands: `23,32,36,41,46,50,55,59,64,69,73,78,82MHz`
 - workers: `4`
-- queue length: `8`
+- queue length: `workers + 3` (`7` for the default `4` workers)
 - dispatch threshold: `3`
 - dispatch stagger: `15 s`
 - solar elevation gate: `12 deg`
@@ -155,6 +171,8 @@ Current realtime defaults:
 - scan interval: `5 s`
 - pipeline jobs: `13`
 - WSClean threads: `18`
+- fine-channel polarizations: `I` by default, or `I,V` with `--fch-pols I,V`
+- worker temporary cleanup: enabled by default with `--worker-rm-tmp`
 
 Dispatch staggering is enabled by default. When more than one worker is idle, the manager dispatches only one new task and waits at least `15` seconds before dispatching the next one. This reduces the chance that several workers try to copy large Measurement Set directories from Lustre at the same time.
 
@@ -162,6 +180,7 @@ Useful realtime options:
 
 ```bash
 lwasolarproc-realtime \
+  --mode realtime \
   --slow-root /lustre/pipeline/slow \
   --caltable-dir /fast/rtpipe/caltab_h5parm \
   --proc-tmp /fast/rtpipe/proc_realtime/proc_tmp \
@@ -176,12 +195,46 @@ lwasolarproc-realtime \
   --once
 ```
 
-Important queue behavior in `--once` mode:
+Backlog replay example:
 
+```bash
+lwasolarproc-realtime \
+  --mode backlog \
+  --slow-root /lustre/pipeline/slow \
+  --start-timestamp 20260424_200004 \
+  --end-timestamp 20260424_200254 \
+  --cadence-s 10 \
+  --bands 23MHz,32MHz,36MHz,41MHz,46MHz,50MHz,55MHz,59MHz,64MHz,69MHz,73MHz,78MHz,82MHz \
+  --workers 5 \
+  --proc-tmp /dev/shm/tmp_pipe_dir/proc_tmp \
+  --proc-out /fast/rtpipe/proc_backlog/proc_out
+```
+
+Flat event-folder example:
+
+```bash
+lwasolarproc-realtime \
+  --mode event \
+  --data-dir /lustre/peijin/20260322weakTypeII \
+  --start-timestamp 20260322_180000 \
+  --end-timestamp 20260322_181000 \
+  --cadence-s 10 \
+  --bands 23MHz,32MHz,36MHz,41MHz,46MHz,50MHz,55MHz \
+  --workers 4 \
+  --proc-tmp /dev/shm/tmp_pipe_dir/proc_event \
+  --proc-out /fast/rtpipe/proc_event/proc_out
+```
+
+Important queue behavior in realtime `--once` mode:
+
+- `--once` is intended for bounded realtime smoke tests and debugging, not normal live operation.
+- Without `--once`, realtime mode keeps scanning every `--scan-interval` seconds and tries to keep up with the newest ready data.
 - The manager scans once, fills the queue, and keeps dispatching while the queue length is at least `--dispatch-min-queue`.
 - If the remaining queue length drops below `--dispatch-min-queue`, the manager exits after current workers finish.
 - Example: queue length `26` with `--dispatch-min-queue 3` typically processes `24` tasks and leaves the last `2` queued but undispatched.
 - Use `--dispatch-min-queue 1` when you want a bounded `--once` run to drain the full queue.
+
+Backlog and event modes do not need `--once`. They already have a finite `start/end/cadence` timestamp list and drain it chronologically; once the list is exhausted, the dispatch threshold drops to `1` so the final tail is processed.
 
 Important queue filters:
 
@@ -194,6 +247,7 @@ Realtime worker logs:
 - manager log: `proc_out/log/realtime_task_manage.log`
 - per-worker logs: `proc_out/log/YYYYMMDD_HHMMSS.worker_i.log`
 - worker subprocess stdout/stderr is redirected into the per-worker logs so the manager stream stays concise
+- `--worker-rm-tmp` is enabled by default and removes a worker's per-job scratch directory before the worker is returned to the idle pool; use `--no-worker-rm-tmp` only when debugging a failed job directory
 
 ### Live Tests
 
@@ -360,7 +414,7 @@ Configuration:
 - worker scratch: `/dev/shm/tmp_pipe_dir/proc_realtime_20260424_2000_18f_5w/proc_tmp`
 - output root: `/fast/rtpipe/proc_realtime_20260424_2000_18f_5w_memtmp/proc_out`
 - model auto geometry: `2500 m` telescope size, `2.2` pixel scale factor, `182 deg` field of view
-- final solar imaging geometry: fixed `384 x 384`, `1.5arcmin`
+- final solar imaging geometry: fixed `384 x 384`, `1.8arcmin`
 
 Overall result:
 
@@ -419,7 +473,7 @@ Configuration:
 - queue length: `26`
 - dispatch threshold: `3`
 - dispatch stagger: `15 s`
-- output figures: default MFS `I` and `V/I`
+- output figures: default MFS `I` and `V`
 
 Observed result before the bounded run was stopped:
 
@@ -427,7 +481,7 @@ Observed result before the bounded run was stopped:
 - completed and published: `10`
 - each completed frame published both:
   - `...image_I.png`
-  - `...image_VI.png`
+  - `...image_V.png`
 - observed completed-frame wall times included:
   - `894.89 s`
   - `1028.18 s`
@@ -440,7 +494,7 @@ Observed result before the bounded run was stopped:
   - `400.72 s`
   - `395.20 s`
 
-This 2026-04-21 live run was much slower than the 2026-04-20 benchmark because the first-wave workers spent most of their wall time in live copy/setup on Lustre before the pipeline stage. The run still confirmed that the realtime default now carries the new MFS `V/I` quicklook all the way through worker post-processing and publication.
+This 2026-04-21 live run was much slower than the 2026-04-20 benchmark because the first-wave workers spent most of their wall time in live copy/setup on Lustre before the pipeline stage. The run still confirmed that the realtime default now carries the new MFS `V` quicklook all the way through worker post-processing and publication.
 
 #### 2026-04-21 bounded 26-task live test with solar-elevation gating
 
@@ -463,7 +517,7 @@ Configuration:
 - dispatch stagger: `15 s`
 - elevation gate: `12 deg`
 - bounded replay start: `20260420_162000`
-- output figures: default MFS `I` and `V/I`
+- output figures: default MFS `I` and `V`
 
 Observed result:
 
@@ -479,7 +533,7 @@ Observed result:
 Published products:
 
 - `24` MFS `I` PNG quicklooks
-- `24` MFS `V/I` PNG quicklooks
+- `24` MFS `V` PNG quicklooks
 - `24` per-run summary TSV files
 
 Manager per-frame wall statistics:
@@ -532,7 +586,7 @@ fig, axes = slow_pipeline_default_polarization_plot(
     "combined_mfs_V.fits",
     add_logo=False,
 )
-fig.savefig("combined_mfs_VI.quicklook.png", dpi=150, bbox_inches="tight")
+fig.savefig("combined_mfs_V.quicklook.png", dpi=150, bbox_inches="tight")
 ```
 
 Full-band processing from Python:
