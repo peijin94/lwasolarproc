@@ -247,6 +247,64 @@ def discover_trigger_timestamps(slow_root: Path, trigger_band: str, lookback_hou
     return sorted(stamps)
 
 
+def timestamp_in_range(timestamp: str, start_timestamp: str | None, end_timestamp: str | None) -> bool:
+    if start_timestamp is not None and timestamp < start_timestamp:
+        return False
+    if end_timestamp is not None and timestamp > end_timestamp:
+        return False
+    return True
+
+
+def discover_flat_timestamps(
+    data_root: Path,
+    bands: Sequence[str],
+    start_timestamp: str | None = None,
+    end_timestamp: str | None = None,
+) -> list[str]:
+    band_set = set(bands)
+    stamps: set[str] = set()
+    if not is_dir_safe(data_root):
+        return []
+    for path in sorted(data_root.iterdir()):
+        match = TIMESTAMP_RE.match(path.name)
+        if match is None or match.group("band") not in band_set:
+            continue
+        stamp = match.group("stamp")
+        if timestamp_in_range(stamp, start_timestamp, end_timestamp):
+            stamps.add(stamp)
+    return sorted(stamps)
+
+
+def hour_range(start: datetime, end: datetime) -> list[datetime]:
+    current = start.replace(minute=0, second=0, microsecond=0)
+    final = end.replace(minute=0, second=0, microsecond=0)
+    hours: list[datetime] = []
+    while current <= final:
+        hours.append(current)
+        current += timedelta(hours=1)
+    return hours
+
+
+def discover_structured_timestamps(
+    slow_root: Path,
+    trigger_band: str,
+    start_timestamp: str,
+    end_timestamp: str,
+) -> list[str]:
+    start = parse_timestamp(start_timestamp)
+    end = parse_timestamp(end_timestamp)
+    stamps: set[str] = set()
+    for dt in hour_range(start, end):
+        hour_dir = slow_root / trigger_band / dt.strftime("%Y-%m-%d") / dt.strftime("%H")
+        if not is_dir_safe(hour_dir):
+            continue
+        for path in sorted(hour_dir.glob(f"*_{trigger_band}.ms*")):
+            stamp = timestamp_from_ms_name(path)
+            if stamp is not None and timestamp_in_range(stamp, start_timestamp, end_timestamp):
+                stamps.add(stamp)
+    return sorted(stamps)
+
+
 def atomic_copy(src: Path, dst: Path) -> Path:
     dst.parent.mkdir(parents=True, exist_ok=True)
     tmp = dst.with_name(f".{dst.name}.tmp-{os.getpid()}")
@@ -533,16 +591,30 @@ class RealtimeManager:
         self.scanned_once = False
         self.static_scan_index = 0
         self.static_scan_exhausted = False
-        self.static_timestamps = (
-            timestamp_sequence(self.start_timestamp, self.end_timestamp, self.cadence_s)
-            if self.mode in {"backlog", "event"}
-            else []
-        )
+        if self.mode == "backlog":
+            self.static_timestamps = discover_structured_timestamps(
+                self.slow_root,
+                self.trigger_band,
+                self.start_timestamp,
+                self.end_timestamp,
+            )
+        elif self.mode == "event":
+            self.static_timestamps = discover_flat_timestamps(
+                self.slow_root,
+                self.bands,
+                self.start_timestamp,
+                self.end_timestamp,
+            )
+        else:
+            self.static_timestamps = []
+        self.last_enqueued_timestamp: str | None = None
         self.last_dispatch_monotonic: float | None = None
 
         self.output_dirs = ensure_output_dirs(self.proc_out)
         for worker_id in range(self.workers):
             (self.proc_tmp / f"worker_{worker_id}").mkdir(parents=True, exist_ok=True)
+        if self.mode in {"backlog", "event"}:
+            logging.info("Discovered %d existing timestamp(s) for %s mode", len(self.static_timestamps), self.mode)
 
     def request_stop(self, signum: int, _frame: object) -> None:
         logging.info("Received signal %s; stopping after running tasks finish", signum)
@@ -584,6 +656,7 @@ class RealtimeManager:
                 continue
             candidates.append((timestamp, available))
 
+        candidates = self.filter_candidates_by_min_cadence(candidates)
         remaining_slots = self.queue_length - len(self.queue)
         selected = candidates[-remaining_slots:] if remaining_slots > 0 else []
         for timestamp, available in selected:
@@ -617,9 +690,42 @@ class RealtimeManager:
         if self.static_scan_index >= len(self.static_timestamps):
             self.static_scan_exhausted = True
 
+    def cadence_allows(self, timestamp: str) -> bool:
+        if self.last_enqueued_timestamp is None:
+            return True
+        delta_s = (parse_timestamp(timestamp) - parse_timestamp(self.last_enqueued_timestamp)).total_seconds()
+        return delta_s >= self.cadence_s
+
+    def filter_candidates_by_min_cadence(
+        self,
+        candidates: Sequence[tuple[str, dict[str, Path]]],
+    ) -> list[tuple[str, dict[str, Path]]]:
+        selected: list[tuple[str, dict[str, Path]]] = []
+        last_timestamp = self.last_enqueued_timestamp
+        skipped = 0
+        for timestamp, available in sorted(candidates, key=lambda item: item[0]):
+            if last_timestamp is not None:
+                delta_s = (parse_timestamp(timestamp) - parse_timestamp(last_timestamp)).total_seconds()
+                if delta_s < self.cadence_s:
+                    skipped += 1
+                    continue
+            selected.append((timestamp, available))
+            last_timestamp = timestamp
+        if skipped:
+            logging.info("Skipped %d ready timestamp(s) below minimum cadence %.1fs", skipped, self.cadence_s)
+        return selected
+
     def queue_task(self, timestamp: str, available: Mapping[str, Path]) -> None:
         if len(self.queue) >= self.queue_length:
             logging.info("Queue reached capacity; leaving later timestamps for future scans")
+            return
+        if not self.cadence_allows(timestamp):
+            logging.info(
+                "Skipped %s below minimum cadence %.1fs after last queued timestamp %s",
+                timestamp,
+                self.cadence_s,
+                self.last_enqueued_timestamp,
+            )
             return
         task = RealtimeTask(
             timestamp=timestamp,
@@ -627,6 +733,7 @@ class RealtimeManager:
         )
         self.queue.append(task)
         self.queued.add(timestamp)
+        self.last_enqueued_timestamp = timestamp
         logging.info(
             "Queued %s with %d visible bands: %s",
             timestamp,
@@ -830,8 +937,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--scan-interval", type=float, default=5.0)
     parser.add_argument("--scan-lookback-hours", type=int, default=1)
     parser.add_argument("--start-timestamp", help="Only consider timestamps at or after YYYYMMDD_HHMMSS.")
-    parser.add_argument("--end-timestamp", help="Last timestamp for backlog/event modes, in YYYYMMDD_HHMMSS.")
-    parser.add_argument("--cadence-s", type=float, default=10.0, help="Timestamp cadence in seconds for backlog/event modes.")
+    parser.add_argument("--end-timestamp", help="Only consider timestamps at or before YYYYMMDD_HHMMSS.")
+    parser.add_argument("--cadence-s", type=float, default=10.0, help="Minimum allowed seconds between enqueued timestamps in all modes.")
     parser.add_argument("--pipeline-jobs", type=int, default=13)
     parser.add_argument("--threads", type=int, default=18)
     parser.add_argument("--fch-pols", default="I", help="Comma-separated polarizations for the fine-channel WSClean pass, for example I or I,V.")
@@ -871,13 +978,15 @@ def validate_args(args: argparse.Namespace) -> None:
         parse_timestamp(args.end_timestamp)
     if args.cadence_s <= 0:
         raise ValueError("--cadence-s must be positive")
-    if args.mode in {"backlog", "event"}:
+    if args.start_timestamp is not None and args.end_timestamp is not None:
+        if parse_timestamp(args.end_timestamp) < parse_timestamp(args.start_timestamp):
+            raise ValueError("--end-timestamp must be at or after --start-timestamp")
+    if args.mode == "backlog":
         if args.start_timestamp is None or args.end_timestamp is None:
-            raise ValueError("--start-timestamp and --end-timestamp are required for backlog/event modes")
-        timestamp_sequence(args.start_timestamp, args.end_timestamp, args.cadence_s)
+            raise ValueError("--start-timestamp and --end-timestamp are required for backlog mode")
     bands = parse_bands(args.bands)
-    if args.mode == "realtime" and args.trigger_band not in bands:
-        raise ValueError("--trigger-band must be included in --bands")
+    if args.mode in {"realtime", "backlog"} and args.trigger_band not in bands:
+        raise ValueError("--trigger-band must be included in --bands for realtime/backlog modes")
     if args.ready_min_bands > len(bands):
         raise ValueError("--ready-min-bands cannot exceed the number of configured bands")
     if not args.slow_root.exists():

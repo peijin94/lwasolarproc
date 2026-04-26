@@ -421,16 +421,20 @@ The task manager supports three modes:
   - scans the trigger band repeatedly
   - applies the OVRO solar elevation threshold
   - chooses the newest ready timestamps when the queue has limited room, so it tries to keep up with live data rather than drain old backlog
+  - applies `--cadence-s` as a minimum spacing between actually queued timestamps
 - `backlog`
   - structured source layout under `/lustre/pipeline/slow/BAND/YYYY-MM-DD/HH/`
-  - uses `--start-timestamp`, `--end-timestamp`, and `--cadence-s` to generate all timestamps to process
+  - uses `--start-timestamp` and `--end-timestamp` to discover existing trigger-band timestamps in that range
   - does not apply the elevation gate
-  - drains the generated timestamp list, including the tail below `dispatch-min-queue`
+  - drains the discovered timestamp list, including the tail below `dispatch-min-queue`
+  - applies `--cadence-s` as a minimum spacing between actually queued timestamps
 - `event`
   - flat source layout under a user-provided `--data-dir`
-  - uses `--start-timestamp`, `--end-timestamp`, and `--cadence-s` to generate all timestamps to process
+  - discovers existing timestamps directly from the flat folder
+  - `--start-timestamp` and `--end-timestamp` are optional filters; when omitted, all matching timestamps in the folder are considered
   - expects names such as `YYYYMMDD_HHMMSS_BAND.ms` or `YYYYMMDD_HHMMSS_BAND.ms.tar` directly in that folder
   - does not apply the elevation gate
+  - applies `--cadence-s` as a minimum spacing between actually queued timestamps
 
 ### Discovery Model
 
@@ -472,7 +476,9 @@ A realtime timestamp is queued only if all of the following pass:
 
 The solar-elevation filter was added after a live replay produced empty images because low-elevation timestamps were admitted purely by trigger-band presence.
 
-In backlog and event modes, timestamps come from the generated `start/end/cadence` sequence. Those modes skip the solar-elevation filter and process the sequence in chronological order. If a generated timestamp has fewer than `--ready-min-bands` visible inputs, it is marked failed in the manager log rather than being waited on forever.
+In backlog and event modes, timestamps come from existing `.ms` or `.ms.tar` filenames, not from a synthetic `start/end/cadence` sequence. Those modes skip the solar-elevation filter and process the discovered timestamps in chronological order. If a discovered timestamp has fewer than `--ready-min-bands` visible inputs, it is marked failed in the manager log rather than being waited on forever.
+
+`--cadence-s` is a minimum enqueue spacing in all modes. A timestamp is skipped if it is closer than that many seconds to the last timestamp that was actually queued. Missing or insufficient-band timestamps do not consume the cadence slot.
 
 ### OVRO Solar-Elevation Helper
 

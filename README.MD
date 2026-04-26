@@ -136,13 +136,15 @@ lwasolarproc-realtime \
 
 The manager has three operating modes:
 
-- `--mode backlog`: process a fixed UTC timestamp range from the structured slow-data tree, using `--start-timestamp`, `--end-timestamp`, `--cadence-s`, `--slow-root`, and `--bands`.
+- `--mode backlog`: process existing trigger-band timestamps from the structured slow-data tree over a fixed UTC range, using `--start-timestamp`, `--end-timestamp`, `--slow-root`, and `--bands`.
 - `--mode realtime`: follow live structured slow-data under `/lustre/pipeline/slow`, admit only timestamps with solar elevation above `--el-valid`, and prefer the latest ready frames so the queue does not turn into a stale backlog.
-- `--mode event`: process a fixed UTC timestamp range from a flat event folder containing files such as `YYYYMMDD_HHMMSS_BAND.ms` or `YYYYMMDD_HHMMSS_BAND.ms.tar`, using `--data-dir`, `--start-timestamp`, `--end-timestamp`, `--cadence-s`, and `--bands`.
+- `--mode event`: process existing timestamps from a flat event folder containing files such as `YYYYMMDD_HHMMSS_BAND.ms` or `YYYYMMDD_HHMMSS_BAND.ms.tar`, using `--data-dir` and `--bands`. `--start-timestamp` and `--end-timestamp` are optional filters; when omitted, the whole event folder is considered.
 
 In structured modes, the manager watches paths like `/lustre/pipeline/slow/55MHz/YYYY-MM-DD/HH/` through the `55MHz` trigger band. In flat event mode, it looks directly in the provided data directory. Inputs may be either unpacked `YYYYMMDD_HHMMSS_BAND.ms` directories or `YYYYMMDD_HHMMSS_BAND.ms.tar` archives. Each worker copies all available bands at job start; for `.ms.tar` inputs it first copies the archive into the worker scratch directory, then untars it there before running the fullband pipeline. Workers publish FITS/HDF/PNG products under `proc_out/mfs`, `proc_out/fch`, and `proc_out/fig`, write logs under `proc_out/log`, and remove per-job temporary work under `proc_tmp/worker_i/YYYYMMDD_HHMMSS` by default.
 
 Queue admission also applies a solar-elevation gate at OVRO. By default `--el-valid 12` means a timestamp is queued only when the solar elevation is at least `12 deg`. This prevents the realtime pipeline from wasting work on low-elevation frames that tend to produce empty or poor-quality solar images.
+
+`--cadence-s` is a minimum enqueue spacing in every mode. The manager discovers timestamps from actual `.ms` or `.ms.tar` filenames, then skips a ready timestamp if it is closer than `--cadence-s` seconds to the last timestamp that was actually queued. This handles raw data that is nominally `10 s` cadence but sometimes lands at `9 s` or `11 s`, without generating synthetic missing timestamps.
 
 By default the realtime figure outputs now include both:
 
@@ -216,8 +218,6 @@ Flat event-folder example:
 lwasolarproc-realtime \
   --mode event \
   --data-dir /lustre/peijin/20260322weakTypeII \
-  --start-timestamp 20260322_180000 \
-  --end-timestamp 20260322_181000 \
   --cadence-s 10 \
   --bands 23MHz,32MHz,36MHz,41MHz,46MHz,50MHz,55MHz \
   --workers 4 \
@@ -234,11 +234,13 @@ Important queue behavior in realtime `--once` mode:
 - Example: queue length `26` with `--dispatch-min-queue 3` typically processes `24` tasks and leaves the last `2` queued but undispatched.
 - Use `--dispatch-min-queue 1` when you want a bounded `--once` run to drain the full queue.
 
-Backlog and event modes do not need `--once`. They already have a finite `start/end/cadence` timestamp list and drain it chronologically; once the list is exhausted, the dispatch threshold drops to `1` so the final tail is processed.
+Backlog and event modes do not need `--once`. They discover existing timestamps up front and drain them chronologically; once that list is exhausted, the dispatch threshold drops to `1` so the final tail is processed.
 
 Important queue filters:
 
 - `--start-timestamp YYYYMMDD_HHMMSS` ignores earlier trigger-band timestamps during a bounded replay.
+- `--end-timestamp YYYYMMDD_HHMMSS` ignores later timestamps when a bounded range is needed.
+- `--cadence-s` is the minimum spacing between actually queued timestamps, not a synthetic timestamp generator.
 - `--el-valid` filters timestamps by local OVRO solar elevation before the band-count ready check.
 - The elevation filter is vectorized in `lwasolarproc.util.get_ovro_solar_elevation_deg()` so queue scans can cheaply evaluate many timestamps at once.
 
