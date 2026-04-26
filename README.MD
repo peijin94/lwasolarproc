@@ -140,7 +140,7 @@ The manager has three operating modes:
 - `--mode realtime`: follow live structured slow-data under `/lustre/pipeline/slow`, admit only timestamps with solar elevation above `--el-valid`, and prefer the latest ready frames so the queue does not turn into a stale backlog.
 - `--mode event`: process existing timestamps from a flat event folder containing files such as `YYYYMMDD_HHMMSS_BAND.ms` or `YYYYMMDD_HHMMSS_BAND.ms.tar`, using `--data-dir` and `--bands`. `--start-timestamp` and `--end-timestamp` are optional filters; when omitted, the whole event folder is considered.
 
-In structured modes, the manager watches paths like `/lustre/pipeline/slow/55MHz/YYYY-MM-DD/HH/` through the `55MHz` trigger band. In flat event mode, it looks directly in the provided data directory. Inputs may be either unpacked `YYYYMMDD_HHMMSS_BAND.ms` directories or `YYYYMMDD_HHMMSS_BAND.ms.tar` archives. Each worker copies all available bands at job start; for `.ms.tar` inputs it first copies the archive into the worker scratch directory, then untars it there before running the fullband pipeline. Workers publish FITS/HDF/PNG products under `proc_out/mfs`, `proc_out/fch`, and `proc_out/fig`, write logs under `proc_out/log`, and remove per-job temporary work under `proc_tmp/worker_i/YYYYMMDD_HHMMSS` by default.
+In structured modes, the manager watches paths like `/lustre/pipeline/slow/55MHz/YYYY-MM-DD/HH/` through the `55MHz` trigger band. In flat event mode, it looks directly in the provided data directory. Inputs may be either unpacked `YYYYMMDD_HHMMSS_BAND.ms` directories or `YYYYMMDD_HHMMSS_BAND.ms.tar` archives. Each worker copies all available bands at job start; for `.ms.tar` inputs it first copies the archive into the worker scratch directory, then untars it there before running the fullband pipeline. Workers publish FITS/HDF/PNG products under dated `proc_out/{fits,hdf,fig}/slow/lev1/YYYY/MM/DD/` trees, write logs under `proc_out/log`, and remove per-job temporary work under `proc_tmp/worker_i/YYYYMMDD_HHMMSS` by default.
 
 Queue admission also applies a solar-elevation gate at OVRO. By default `--el-valid 12` means a timestamp is queued only when the solar elevation is at least `12 deg`. This prevents the realtime pipeline from wasting work on low-elevation frames that tend to produce empty or poor-quality solar images.
 
@@ -148,15 +148,19 @@ Queue admission also applies a solar-elevation gate at OVRO. By default `--el-va
 
 By default the realtime figure outputs now include both:
 
-- `ovro-lwa-352.lev1.5_mfs_10s.YYYY-MM-DDTHHMMSSZ.image_I.png`
-- `ovro-lwa-352.lev1.5_mfs_10s.YYYY-MM-DDTHHMMSSZ.image_V.png`
+- `proc_out/fig/slow/lev1/YYYY/MM/DD/ovro-lwa-352.lev1_mfs_10s.YYYY-MM-DDTHHMMSSZ.image_I.png`
+- `proc_out/fig/slow/lev1/YYYY/MM/DD/ovro-lwa-352.lev1_mfs_10s.YYYY-MM-DDTHHMMSSZ.image_V.png`
 
 Realtime FITS/HDF products are published as:
 
-- `proc_out/mfs/ovro-lwa-352.lev1.5_mfs_10s.YYYY-MM-DDTHHMMSSZ.image_I.fits`
-- `proc_out/mfs/ovro-lwa-352.lev1.5_mfs_10s.YYYY-MM-DDTHHMMSSZ.image_V.fits`
-- `proc_out/fch/ovro-lwa-352.lev1.5_fch_10s.YYYY-MM-DDTHHMMSSZ.image_I.fits`
-- optional with `--fch-pols I,V`: `proc_out/fch/ovro-lwa-352.lev1.5_fch_10s.YYYY-MM-DDTHHMMSSZ.image_V.fits`
+- `proc_out/fits/slow/lev1/YYYY/MM/DD/ovro-lwa-352.lev1_mfs_10s.YYYY-MM-DDTHHMMSSZ.image_I.fits`
+- `proc_out/hdf/slow/lev1/YYYY/MM/DD/ovro-lwa-352.lev1_mfs_10s.YYYY-MM-DDTHHMMSSZ.image_I.hdf`
+- `proc_out/fits/slow/lev1/YYYY/MM/DD/ovro-lwa-352.lev1_mfs_10s.YYYY-MM-DDTHHMMSSZ.image_V.fits`
+- `proc_out/hdf/slow/lev1/YYYY/MM/DD/ovro-lwa-352.lev1_mfs_10s.YYYY-MM-DDTHHMMSSZ.image_V.hdf`
+- `proc_out/fits/slow/lev1/YYYY/MM/DD/ovro-lwa-352.lev1_fch_10s.YYYY-MM-DDTHHMMSSZ.image_I.fits`
+- `proc_out/hdf/slow/lev1/YYYY/MM/DD/ovro-lwa-352.lev1_fch_10s.YYYY-MM-DDTHHMMSSZ.image_I.hdf`
+- optional with `--fch-pols I,V`: `proc_out/fits/slow/lev1/YYYY/MM/DD/ovro-lwa-352.lev1_fch_10s.YYYY-MM-DDTHHMMSSZ.image_V.fits`
+- optional with `--fch-pols I,V`: `proc_out/hdf/slow/lev1/YYYY/MM/DD/ovro-lwa-352.lev1_fch_10s.YYYY-MM-DDTHHMMSSZ.image_V.hdf`
 
 The `image_V.png` quicklook uses the same 12-panel layout as the MFS I figure and plots Stokes `V` in MK. Each panel annotates `max|V|`, and the color scale is set from the `99.99` percentile of `|V|`. Both default quicklook layouts use a solar field of view of `+-7200 arcsec`.
 

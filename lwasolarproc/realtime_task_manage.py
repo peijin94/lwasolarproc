@@ -40,6 +40,9 @@ PRODUCTION_BANDS = [
     "82MHz",
 ]
 TIMESTAMP_RE = re.compile(r"(?P<stamp>\d{8}_\d{6})_(?P<band>\d+MHz)\.ms(?:\.tar)?$")
+OUTPUT_STREAM = "slow"
+OUTPUT_LEVEL = "lev1"
+OUTPUT_PREFIX = "ovro-lwa-352.lev1"
 
 
 @dataclass(frozen=True)
@@ -327,8 +330,8 @@ def atomic_compress_fits(src: Path, dst: Path) -> Path:
 
 def ensure_output_dirs(proc_out: Path) -> dict[str, Path]:
     dirs = {
-        "mfs": proc_out / "mfs",
-        "fch": proc_out / "fch",
+        "fits": proc_out / "fits",
+        "hdf": proc_out / "hdf",
         "fig": proc_out / "fig",
         "log": proc_out / "log",
     }
@@ -337,20 +340,33 @@ def ensure_output_dirs(proc_out: Path) -> dict[str, Path]:
     return dirs
 
 
-def realtime_output_paths(proc_out: Path, timestamp: str) -> dict[str, Path]:
+def product_dir(proc_out: Path, file_type: str, timestamp: str) -> Path:
+    dt = parse_timestamp(timestamp)
+    return proc_out / file_type / OUTPUT_STREAM / OUTPUT_LEVEL / dt.strftime("%Y") / dt.strftime("%m") / dt.strftime("%d")
+
+
+def product_filename(timestamp: str, product: str, pol: str, extension: str) -> str:
     stamp = format_output_timestamp(timestamp)
-    prefix = f"ovro-lwa-352.lev1.5"
+    return f"{OUTPUT_PREFIX}_{product}_10s.{stamp}.image_{pol}.{extension}"
+
+
+def product_path(proc_out: Path, file_type: str, timestamp: str, product: str, pol: str, extension: str | None = None) -> Path:
+    ext = extension or file_type
+    return product_dir(proc_out, file_type, timestamp) / product_filename(timestamp, product, pol, ext)
+
+
+def realtime_output_paths(proc_out: Path, timestamp: str) -> dict[str, Path]:
     return {
-        "mfs_i_fits": proc_out / "mfs" / f"{prefix}_mfs_10s.{stamp}.image_I.fits",
-        "mfs_i_hdf": proc_out / "mfs" / f"{prefix}_mfs_10s.{stamp}.image_I.hdf",
-        "mfs_v_fits": proc_out / "mfs" / f"{prefix}_mfs_10s.{stamp}.image_V.fits",
-        "mfs_v_hdf": proc_out / "mfs" / f"{prefix}_mfs_10s.{stamp}.image_V.hdf",
-        "fch_i_fits": proc_out / "fch" / f"{prefix}_fch_10s.{stamp}.image_I.fits",
-        "fch_i_hdf": proc_out / "fch" / f"{prefix}_fch_10s.{stamp}.image_I.hdf",
-        "fch_v_fits": proc_out / "fch" / f"{prefix}_fch_10s.{stamp}.image_V.fits",
-        "fch_v_hdf": proc_out / "fch" / f"{prefix}_fch_10s.{stamp}.image_V.hdf",
-        "mfs_i_png": proc_out / "fig" / f"{prefix}_mfs_10s.{stamp}.image_I.png",
-        "mfs_v_png": proc_out / "fig" / f"{prefix}_mfs_10s.{stamp}.image_V.png",
+        "mfs_i_fits": product_path(proc_out, "fits", timestamp, "mfs", "I"),
+        "mfs_i_hdf": product_path(proc_out, "hdf", timestamp, "mfs", "I"),
+        "mfs_v_fits": product_path(proc_out, "fits", timestamp, "mfs", "V"),
+        "mfs_v_hdf": product_path(proc_out, "hdf", timestamp, "mfs", "V"),
+        "fch_i_fits": product_path(proc_out, "fits", timestamp, "fch", "I"),
+        "fch_i_hdf": product_path(proc_out, "hdf", timestamp, "fch", "I"),
+        "fch_v_fits": product_path(proc_out, "fits", timestamp, "fch", "V"),
+        "fch_v_hdf": product_path(proc_out, "hdf", timestamp, "fch", "V"),
+        "mfs_i_png": product_path(proc_out, "fig", timestamp, "mfs", "I", extension="png"),
+        "mfs_v_png": product_path(proc_out, "fig", timestamp, "mfs", "V", extension="png"),
     }
 
 

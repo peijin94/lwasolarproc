@@ -356,7 +356,7 @@ Compression behavior:
 - stores channel tables and original cube shape metadata
 - supports beam-size-driven spatial downsizing before gzip compression
 
-Realtime publication uses the FITS-to-HDF conversion automatically after copying final FITS products into `proc_out`.
+Realtime publication uses the FITS-to-HDF conversion automatically after copying final FITS products into the dated output tree under `proc_out`.
 
 ## Visualization Design
 
@@ -529,25 +529,29 @@ Worker subprocess stdout and stderr are redirected into per-worker log files so 
 
 ### Realtime Output Naming
 
-Published output names follow:
+Published realtime output names follow:
 
 - MFS I FITS:
-  - `ovro-lwa-352.lev1.5_mfs_10s.YYYY-MM-DDTHHMMSSZ.image_I.fits`
+  - `proc_out/fits/slow/lev1/YYYY/MM/DD/ovro-lwa-352.lev1_mfs_10s.YYYY-MM-DDTHHMMSSZ.image_I.fits`
+  - `proc_out/hdf/slow/lev1/YYYY/MM/DD/ovro-lwa-352.lev1_mfs_10s.YYYY-MM-DDTHHMMSSZ.image_I.hdf`
 - MFS V FITS:
-  - `ovro-lwa-352.lev1.5_mfs_10s.YYYY-MM-DDTHHMMSSZ.image_V.fits`
+  - `proc_out/fits/slow/lev1/YYYY/MM/DD/ovro-lwa-352.lev1_mfs_10s.YYYY-MM-DDTHHMMSSZ.image_V.fits`
+  - `proc_out/hdf/slow/lev1/YYYY/MM/DD/ovro-lwa-352.lev1_mfs_10s.YYYY-MM-DDTHHMMSSZ.image_V.hdf`
 - FCH I FITS:
-  - `ovro-lwa-352.lev1.5_fch_10s.YYYY-MM-DDTHHMMSSZ.image_I.fits`
+  - `proc_out/fits/slow/lev1/YYYY/MM/DD/ovro-lwa-352.lev1_fch_10s.YYYY-MM-DDTHHMMSSZ.image_I.fits`
+  - `proc_out/hdf/slow/lev1/YYYY/MM/DD/ovro-lwa-352.lev1_fch_10s.YYYY-MM-DDTHHMMSSZ.image_I.hdf`
 - optional FCH V FITS:
-  - `ovro-lwa-352.lev1.5_fch_10s.YYYY-MM-DDTHHMMSSZ.image_V.fits`
+  - `proc_out/fits/slow/lev1/YYYY/MM/DD/ovro-lwa-352.lev1_fch_10s.YYYY-MM-DDTHHMMSSZ.image_V.fits`
+  - `proc_out/hdf/slow/lev1/YYYY/MM/DD/ovro-lwa-352.lev1_fch_10s.YYYY-MM-DDTHHMMSSZ.image_V.hdf`
 - quicklooks:
-  - `...image_I.png`
-  - `...image_V.png`
+  - `proc_out/fig/slow/lev1/YYYY/MM/DD/ovro-lwa-352.lev1_mfs_10s.YYYY-MM-DDTHHMMSSZ.image_I.png`
+  - `proc_out/fig/slow/lev1/YYYY/MM/DD/ovro-lwa-352.lev1_mfs_10s.YYYY-MM-DDTHHMMSSZ.image_V.png`
 
 Output directories:
 
-- `proc_out/mfs`
-- `proc_out/fch`
-- `proc_out/fig`
+- `proc_out/fits/slow/lev1/YYYY/MM/DD`
+- `proc_out/hdf/slow/lev1/YYYY/MM/DD`
+- `proc_out/fig/slow/lev1/YYYY/MM/DD`
 - `proc_out/log`
 
 ### Log Files
