@@ -167,7 +167,7 @@ The `image_V.png` quicklook uses the same 12-panel layout as the MFS I figure an
 Current realtime defaults:
 
 - trigger band: `55MHz`
-- production bands: `23,32,36,41,46,50,55,59,64,69,73,78,82MHz`
+- production bands: `13,18,23,27,32,36,41,46,50,55,59,64,69,73,78,82MHz`
 - workers: `4`
 - queue length: `workers + 3` (`7` for the default `4` workers)
 - dispatch threshold: `3`

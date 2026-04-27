@@ -575,7 +575,7 @@ Current packaged defaults are:
 
 - trigger band: `55MHz`
 - production bands:
-  - `23,32,36,41,46,50,55,59,64,69,73,78,82 MHz`
+  - `13,18,23,27,32,36,41,46,50,55,59,64,69,73,78,82 MHz`
 - workers: `4`
 - queue length: `workers + 3` (`7` for the default `4` workers)
 - dispatch minimum queue: `3`

@@ -25,7 +25,10 @@ from .util import compress_fits_to_h5, filter_ovro_timestamps_by_solar_elevation
 
 
 PRODUCTION_BANDS = [
+    "13MHz",
+    "18MHz",
     "23MHz",
+    "27MHz",
     "32MHz",
     "36MHz",
     "41MHz",
