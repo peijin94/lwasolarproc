@@ -26,7 +26,7 @@ class WSCleanOptions:
 
     wsclean_bin: str = "wsclean"
     threads: int = 18
-    mem_percent: int = 8
+    mem_percent: int = 5
     size: int = 384
     scale: str = "1.8arcmin"
     auto_pix_fov: bool = False
@@ -247,7 +247,7 @@ def predict_model(
     pol: str = "I",
     wsclean_bin: str = "wsclean",
     threads: int = 18,
-    mem_percent: int = 8,
+    mem_percent: int = 5,
     field: str = "all",
     dry_run: bool = False,
     check: bool = True,

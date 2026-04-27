@@ -293,20 +293,28 @@ def fitsj2000tohelio(in_fits, out_fits=None, reftime="", toK=True,
                 print('Converting data to Kelvin')
                 
             if all(key in hdr for key in ['BMAJ', 'BMIN', 'CRVAL3']):
-                bmaj = hdr['BMAJ'] * 3600.0  # Convert to arcsec
-                bmin = hdr['BMIN'] * 3600.0  # Convert to arcsec
-                freq = hdr['CRVAL3']/1e9  # Convert to GHz
-                
-                convJyb2K = 1.222e6/(bmaj*bmin*freq**2)
-                
-                if verbose:
-                    print(f'Beam major axis: {bmaj:.2f} arcsec')
-                    print(f'Beam minor axis: {bmin:.2f} arcsec')
-                    print(f'Frequency: {freq:.2f} GHz')
-                
-                # Convert Jy/beam to K
-                hdul[0].data = hdul[0].data * convJyb2K    
-                hdr['BUNIT'] = 'K'
+                bmaj = float(hdr['BMAJ']) * 3600.0  # Convert to arcsec
+                bmin = float(hdr['BMIN']) * 3600.0  # Convert to arcsec
+                freq = float(hdr['CRVAL3']) / 1e9  # Convert to GHz
+                denom = bmaj * bmin * freq**2
+
+                if not np.isfinite(denom) or denom <= 0:
+                    print(
+                        'Warning: Invalid beam/frequency metadata for Jy/beam to K '
+                        f'conversion: BMAJ={hdr["BMAJ"]}, BMIN={hdr["BMIN"]}, '
+                        f'CRVAL3={hdr["CRVAL3"]}; skipping conversion'
+                    )
+                else:
+                    convJyb2K = 1.222e6 / denom
+
+                    if verbose:
+                        print(f'Beam major axis: {bmaj:.2f} arcsec')
+                        print(f'Beam minor axis: {bmin:.2f} arcsec')
+                        print(f'Frequency: {freq:.2f} GHz')
+
+                    # Convert Jy/beam to K
+                    hdul[0].data = hdul[0].data * convJyb2K
+                    hdr['BUNIT'] = 'K'
             else:
                 print('Warning: Missing required header keywords for Jy/beam to K conversion')
 

@@ -274,7 +274,7 @@ Current final solar imaging defaults:
 
 - `-quiet`
 - `-j 18`
-- `-mem 8`
+- `-mem 5`
 - `-size 384 384`
 - `-scale 1.8arcmin`
 - `-weight briggs -0.5`

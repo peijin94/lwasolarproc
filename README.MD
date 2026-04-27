@@ -113,7 +113,7 @@ lwasolarproc-fullband \
 
 Use `--no-bright-source-removal` to run the older path without source-list subtraction.
 
-Current default final solar WSClean imaging settings use `-quiet`, `-j 18`, `-mem 8`, `-size 384 384`, `-scale 1.8arcmin`, `-weight briggs -0.5`, `-minuv-l 10`, `-auto-threshold 3`, `-niter 10000`, `-mgain 0.8`, `-beam-fitting-size 2`, `-no-reorder`, `-no-update-model-required`, and `-no-dirty`.
+Current default final solar WSClean imaging settings use `-quiet`, `-j 18`, `-mem 5`, `-size 384 384`, `-scale 1.8arcmin`, `-weight briggs -0.5`, `-minuv-l 10`, `-auto-threshold 3`, `-niter 10000`, `-mgain 0.8`, `-beam-fitting-size 2`, `-no-reorder`, `-no-update-model-required`, and `-no-dirty`.
 
 Fine-channel imaging defaults to Stokes `I`. Use `--fch-pols I,V` to generate fine-channel Stokes `V` products in the same WSClean pass. Realtime mode accepts the same option and publishes optional FCH `V` FITS/HDF products when `combined_fch_V.fits` is produced.
 

@@ -937,6 +937,80 @@ def centered_subregion(fits_path: Path, cutout_size: int) -> list[int] | None:
     return [xmin, xmin + cutout_size, ymin, ymin + cutout_size]
 
 
+def read_valid_beam_metadata(fits_path: Path) -> tuple[float, float, float, float] | None:
+    from astropy.io import fits  # type: ignore
+
+    with fits.open(fits_path, memmap=False) as hdul:
+        hdr = hdul[0].header
+        freq = float(hdr.get("CRVAL3", np.nan))
+        bmaj = float(hdr.get("BMAJ", np.nan))
+        bmin = float(hdr.get("BMIN", np.nan))
+        bpa = float(hdr.get("BPA", 0.0))
+    if not all(np.isfinite(value) for value in (freq, bmaj, bmin, bpa)):
+        return None
+    if freq <= 0 or bmaj <= 0 or bmin <= 0:
+        return None
+    return freq, bmaj, bmin, bpa
+
+
+def build_beam_fallbacks(source_fits: Sequence[Path]) -> dict[Path, tuple[float, float, float] | None]:
+    valid: list[tuple[float, float, float, float]] = []
+    metadata: dict[Path, tuple[float, float, float, float] | None] = {}
+    for path in source_fits:
+        values = read_valid_beam_metadata(path)
+        metadata[path] = values
+        if values is not None:
+            valid.append(values)
+
+    if not valid:
+        return {path: None for path in source_fits}
+
+    fallbacks: dict[Path, tuple[float, float, float] | None] = {}
+    for path in source_fits:
+        values = metadata[path]
+        if values is not None:
+            fallbacks[path] = None
+            continue
+        try:
+            from astropy.io import fits  # type: ignore
+
+            freq = float(fits.getheader(path).get("CRVAL3", np.nan))
+        except Exception:
+            freq = np.nan
+        if np.isfinite(freq):
+            nearest = min(valid, key=lambda item: abs(item[0] - freq))
+        else:
+            nearest = valid[0]
+        fallbacks[path] = (nearest[1], nearest[2], nearest[3])
+    return fallbacks
+
+
+def prepare_fits_with_beam_fallback(
+    src: Path,
+    *,
+    index: int,
+    helio_dir: Path,
+    fallback: tuple[float, float, float] | None,
+) -> Path:
+    if fallback is None:
+        return src
+
+    from astropy.io import fits  # type: ignore
+
+    fixed = helio_dir / f"{index:04d}_{src.stem}.beamfix.fits"
+    shutil.copyfile(src, fixed)
+    bmaj, bmin, bpa = fallback
+    with fits.open(fixed, mode="update", memmap=False) as hdul:
+        hdr = hdul[0].header
+        hdr["BMAJ"] = bmaj
+        hdr["BMIN"] = bmin
+        hdr["BPA"] = bpa
+        hdr.add_history(f"LWASOLARPROC: filled invalid beam from nearest valid channel for {src.name}")
+        hdul.flush()
+    print(f"[postprocess] {src.name}: filled invalid beam with BMAJ={bmaj:g} BMIN={bmin:g} BPA={bpa:g}")
+    return fixed
+
+
 def _as_paths(value: object) -> list[Path]:
     if value is None or value == "":
         return []
@@ -975,11 +1049,19 @@ def convert_and_combine_fits(
     helio_dir = output_dir / "helio" / label
     helio_dir.mkdir(parents=True, exist_ok=True)
     converted: list[str] = []
-    for index, src in enumerate(sorted(existing), start=1):
+    sorted_existing = sorted(existing)
+    beam_fallbacks = build_beam_fallbacks(sorted_existing)
+    for index, src in enumerate(sorted_existing, start=1):
         out = helio_dir / f"{index:04d}_{src.stem}.helio.fits"
+        source_for_convert = prepare_fits_with_beam_fallback(
+            src,
+            index=index,
+            helio_dir=helio_dir,
+            fallback=beam_fallbacks.get(src),
+        )
         subregion = centered_subregion(src, config.postprocess_cutout_size)
         fitsj2000tohelio(
-            str(src),
+            str(source_for_convert),
             str(out),
             toK=config.postprocess_to_kelvin,
             verbose=False,
@@ -1338,7 +1420,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--niter", type=int, default=10000)
     parser.add_argument("--weight", nargs=2, default=["briggs", "-0.5"])
     parser.add_argument("--horizon-mask", default="5deg")
-    parser.add_argument("--wsclean-mem-percent", type=int, default=8)
+    parser.add_argument("--wsclean-mem-percent", type=int, default=5)
     parser.add_argument("--mgain", type=float, default=0.8)
     parser.add_argument("--auto-mask", type=float, default=None)
     parser.add_argument("--auto-threshold", type=float, default=3.0)
