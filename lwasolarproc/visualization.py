@@ -265,7 +265,7 @@ def slow_pipeline_default_plot(
     meta, rdata = ndfits.read(fname)
     header = meta.get("header", {})
 
-    if not apply_fiducial_primary_beam:
+    if apply_fiducial_primary_beam:
         obstime = Time(_header_get(header, "DATE-OBS"))
         _, alt = get_solar_altaz_multiple_times(obstime)
         beam_gain = np.sin(np.deg2rad(alt)) ** 1.6

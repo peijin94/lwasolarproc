@@ -46,7 +46,12 @@ TIMESTAMP_RE = re.compile(r"(?P<stamp>\d{8}_\d{6})_(?P<band>\d+MHz)\.ms(?:\.tar)
 OUTPUT_STREAM = "slow"
 OUTPUT_LEVEL = "lev1"
 OUTPUT_PREFIX = "ovro-lwa-352.lev1"
+SYNOP_OUTPUT_LEVEL = "synop"
+SYNOP_OUTPUT_PREFIX = "ovro-lwa-352.synop"
 LUSTRE_INGEST_ROOT = Path("/lustre/solarpipe/realtime_pipeline")
+DEFAULT_FIG_DIR = "fig"
+LUSTRE_MFS_I_FIG_DIR = "figs_mfs"
+LUSTRE_MFS_V_FIG_DIR = "figs_mfs_V"
 
 
 @dataclass(frozen=True)
@@ -340,45 +345,109 @@ def ensure_output_dirs(proc_out: Path, *, ingest_lustre: bool = False) -> dict[s
         "log": proc_out / "log",
     }
     if ingest_lustre:
-        dirs["figs_mfs"] = proc_out / "figs_mfs"
-        dirs["figs_mfs_V"] = proc_out / "figs_mfs_V"
+        dirs[LUSTRE_MFS_I_FIG_DIR] = proc_out / LUSTRE_MFS_I_FIG_DIR
+        dirs[LUSTRE_MFS_V_FIG_DIR] = proc_out / LUSTRE_MFS_V_FIG_DIR
     else:
-        dirs["fig"] = proc_out / "fig"
+        dirs[DEFAULT_FIG_DIR] = proc_out / DEFAULT_FIG_DIR
     for path in dirs.values():
         path.mkdir(parents=True, exist_ok=True)
     return dirs
 
 
-def product_dir(proc_out: Path, file_type: str, timestamp: str) -> Path:
+def product_dir(proc_out: Path, output_dir: str, timestamp: str, *, output_level: str = OUTPUT_LEVEL) -> Path:
     dt = parse_timestamp(timestamp)
-    return proc_out / file_type / OUTPUT_STREAM / OUTPUT_LEVEL / dt.strftime("%Y") / dt.strftime("%m") / dt.strftime("%d")
+    return (
+        proc_out
+        / output_dir
+        / OUTPUT_STREAM
+        / output_level
+        / dt.strftime("%Y")
+        / dt.strftime("%m")
+        / dt.strftime("%d")
+    )
 
 
-def product_filename(timestamp: str, product: str, pol: str, extension: str) -> str:
+def product_filename(
+    timestamp: str,
+    product: str,
+    pol: str,
+    extension: str,
+    *,
+    output_prefix: str = OUTPUT_PREFIX,
+) -> str:
     stamp = format_output_timestamp(timestamp)
-    return f"{OUTPUT_PREFIX}_{product}_10s.{stamp}.image_{pol}.{extension}"
+    return f"{output_prefix}_{product}_10s.{stamp}.image_{pol}.{extension}"
 
 
-def product_path(proc_out: Path, file_type: str, timestamp: str, product: str, pol: str, extension: str | None = None) -> Path:
-    ext = extension or file_type
-    return product_dir(proc_out, file_type, timestamp) / product_filename(timestamp, product, pol, ext)
+def product_path(
+    proc_out: Path,
+    output_dir: str,
+    timestamp: str,
+    product: str,
+    pol: str,
+    extension: str,
+    *,
+    output_level: str = OUTPUT_LEVEL,
+    output_prefix: str = OUTPUT_PREFIX,
+) -> Path:
+    return product_dir(proc_out, output_dir, timestamp, output_level=output_level) / product_filename(
+        timestamp,
+        product,
+        pol,
+        extension,
+        output_prefix=output_prefix,
+    )
+
+
+def fig_output_dir(pol: str, *, ingest_lustre: bool = False) -> str:
+    if not ingest_lustre:
+        return DEFAULT_FIG_DIR
+    if pol == "I":
+        return LUSTRE_MFS_I_FIG_DIR
+    if pol == "V":
+        return LUSTRE_MFS_V_FIG_DIR
+    raise ValueError(f"Unsupported realtime figure polarization: {pol}")
 
 
 def realtime_output_paths(proc_out: Path, timestamp: str, *, ingest_lustre: bool = False) -> dict[str, Path]:
-    mfs_i_fig_type = "figs_mfs" if ingest_lustre else "fig"
-    mfs_v_fig_type = "figs_mfs_V" if ingest_lustre else "fig"
-    return {
-        "mfs_i_fits": product_path(proc_out, "fits", timestamp, "mfs", "I"),
-        "mfs_i_hdf": product_path(proc_out, "hdf", timestamp, "mfs", "I"),
-        "mfs_v_fits": product_path(proc_out, "fits", timestamp, "mfs", "V"),
-        "mfs_v_hdf": product_path(proc_out, "hdf", timestamp, "mfs", "V"),
-        "fch_i_fits": product_path(proc_out, "fits", timestamp, "fch", "I"),
-        "fch_i_hdf": product_path(proc_out, "hdf", timestamp, "fch", "I"),
-        "fch_v_fits": product_path(proc_out, "fits", timestamp, "fch", "V"),
-        "fch_v_hdf": product_path(proc_out, "hdf", timestamp, "fch", "V"),
-        "mfs_i_png": product_path(proc_out, mfs_i_fig_type, timestamp, "mfs", "I", extension="png"),
-        "mfs_v_png": product_path(proc_out, mfs_v_fig_type, timestamp, "mfs", "V", extension="png"),
+    paths = {
+        "mfs_i_fits": product_path(proc_out, "fits", timestamp, "mfs", "I", "fits"),
+        "mfs_i_hdf": product_path(proc_out, "hdf", timestamp, "mfs", "I", "hdf"),
+        "mfs_v_fits": product_path(proc_out, "fits", timestamp, "mfs", "V", "fits"),
+        "mfs_v_hdf": product_path(proc_out, "hdf", timestamp, "mfs", "V", "hdf"),
+        "fch_i_fits": product_path(proc_out, "fits", timestamp, "fch", "I", "fits"),
+        "fch_i_hdf": product_path(proc_out, "hdf", timestamp, "fch", "I", "hdf"),
+        "fch_v_fits": product_path(proc_out, "fits", timestamp, "fch", "V", "fits"),
+        "fch_v_hdf": product_path(proc_out, "hdf", timestamp, "fch", "V", "hdf"),
+        "mfs_i_png": product_path(
+            proc_out,
+            fig_output_dir("I", ingest_lustre=ingest_lustre),
+            timestamp,
+            "mfs",
+            "I",
+            "png",
+        ),
+        "mfs_v_png": product_path(
+            proc_out,
+            fig_output_dir("V", ingest_lustre=ingest_lustre),
+            timestamp,
+            "mfs",
+            "V",
+            "png",
+        ),
     }
+    if ingest_lustre:
+        paths["mfs_i_synop_png"] = product_path(
+            proc_out,
+            LUSTRE_MFS_I_FIG_DIR,
+            timestamp,
+            "mfs",
+            "I",
+            "png",
+            output_level=SYNOP_OUTPUT_LEVEL,
+            output_prefix=SYNOP_OUTPUT_PREFIX,
+        )
+    return paths
 
 
 def copy_available_ms_inputs(
@@ -491,6 +560,8 @@ def publish_outputs(
         published.append(atomic_copy(source_products["fch_v_fits"], outputs["fch_v_fits"]))
         published.append(atomic_compress_fits(outputs["fch_v_fits"], outputs["fch_v_hdf"]))
     published.append(atomic_copy(source_products["mfs_i_png"], outputs["mfs_i_png"]))
+    if ingest_lustre:
+        published.append(atomic_copy(source_products["mfs_i_png"], outputs["mfs_i_synop_png"]))
     published.append(atomic_copy(source_products["mfs_v_png"], outputs["mfs_v_png"]))
     summary_path = run_dir / "preprocessing_and_imaging_summary.tsv"
     if summary_path.exists():
@@ -994,7 +1065,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--end-timestamp", help="Only consider timestamps at or before YYYYMMDD_HHMMSS.")
     parser.add_argument("--cadence-s", type=float, default=10.0, help="Minimum allowed seconds between enqueued timestamps in all modes.")
     parser.add_argument("--pipeline-jobs", type=int, default=13)
-    parser.add_argument("--threads", type=int, default=18)
+    parser.add_argument("--threads", type=int, default=12)
     parser.add_argument("--fch-pols", default="I", help="Comma-separated polarizations for the fine-channel WSClean pass, for example I or I,V.")
     parser.add_argument("--cleanup-failed", action="store_true")
     parser.add_argument(

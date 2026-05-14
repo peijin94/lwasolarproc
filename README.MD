@@ -113,7 +113,7 @@ lwasolarproc-fullband \
 
 Use `--no-bright-source-removal` to run the older path without source-list subtraction.
 
-Current default final solar WSClean imaging settings use `-quiet`, `-j 18`, `-mem 5`, `-size 384 384`, `-scale 1.8arcmin`, `-weight briggs -0.5`, `-minuv-l 10`, `-auto-threshold 3`, `-niter 10000`, `-mgain 0.8`, `-beam-fitting-size 2`, `-no-reorder`, `-no-update-model-required`, and `-no-dirty`.
+Current default final solar WSClean imaging settings use `-quiet`, `-j 12`, `-mem 5`, `-size 384 384`, `-scale 1.8arcmin`, `-weight briggs -0.5`, `-minuv-l 10`, `-auto-threshold 3`, `-niter 10000`, `-mgain 0.8`, `-beam-fitting-size 2`, `-no-reorder`, `-no-update-model-required`, and `-no-dirty`.
 
 Fine-channel imaging defaults to Stokes `I`. Use `--fch-pols I,V` to generate fine-channel Stokes `V` products in the same WSClean pass. Realtime mode accepts the same option and publishes optional FCH `V` FITS/HDF products when `combined_fch_V.fits` is produced.
 
@@ -140,13 +140,13 @@ The manager has three operating modes:
 - `--mode realtime`: follow live structured slow-data under `/lustre/pipeline/slow`, admit only timestamps with solar elevation above `--el-valid`, and prefer the latest ready frames so the queue does not turn into a stale backlog.
 - `--mode event`: process existing timestamps from a flat event folder containing files such as `YYYYMMDD_HHMMSS_BAND.ms` or `YYYYMMDD_HHMMSS_BAND.ms.tar`, using `--data-dir` and `--bands`. `--start-timestamp` and `--end-timestamp` are optional filters; when omitted, the whole event folder is considered.
 
-In structured modes, the manager watches paths like `/lustre/pipeline/slow/55MHz/YYYY-MM-DD/HH/` through the `55MHz` trigger band. In flat event mode, it looks directly in the provided data directory. Inputs may be either unpacked `YYYYMMDD_HHMMSS_BAND.ms` directories or `YYYYMMDD_HHMMSS_BAND.ms.tar` archives. Each worker copies all available bands at job start; for `.ms.tar` inputs it first copies the archive into the worker scratch directory, then untars it there before running the fullband pipeline. Workers publish FITS/HDF/PNG products under dated `proc_out/{fits,hdf,fig}/slow/lev1/YYYY/MM/DD/` trees, write logs under `proc_out/log`, and remove per-job temporary work under `proc_tmp/worker_i/YYYYMMDD_HHMMSS` by default.
+In structured modes, the manager watches paths like `/lustre/pipeline/slow/55MHz/YYYY-MM-DD/HH/` through the `55MHz` trigger band. In flat event mode, it looks directly in the provided data directory. Inputs may be either unpacked `YYYYMMDD_HHMMSS_BAND.ms` directories or `YYYYMMDD_HHMMSS_BAND.ms.tar` archives. Each worker copies all available bands at job start; for `.ms.tar` inputs it first copies the archive into the worker scratch directory, then untars it there before running the fullband pipeline. Workers publish FITS/HDF/PNG products under dated `proc_out/{fits,hdf,fig}/slow/lev1/YYYY/MM/DD/` trees by default, write logs under `proc_out/log`, and remove per-job temporary work under `proc_tmp/worker_i/YYYYMMDD_HHMMSS` by default. Use `--ingest-lustre` for the operational publication layout under `/lustre/solarpipe/realtime_pipeline`.
 
 Queue admission also applies a solar-elevation gate at OVRO. By default `--el-valid 12` means a timestamp is queued only when the solar elevation is at least `12 deg`. This prevents the realtime pipeline from wasting work on low-elevation frames that tend to produce empty or poor-quality solar images.
 
 `--cadence-s` is a minimum enqueue spacing in every mode. The manager discovers timestamps from actual `.ms` or `.ms.tar` filenames, then skips a ready timestamp if it is closer than `--cadence-s` seconds to the last timestamp that was actually queued. This handles raw data that is nominally `10 s` cadence but sometimes lands at `9 s` or `11 s`, without generating synthetic missing timestamps.
 
-By default the realtime figure outputs now include both:
+By default the realtime figure outputs include both:
 
 - `proc_out/fig/slow/lev1/YYYY/MM/DD/ovro-lwa-352.lev1_mfs_10s.YYYY-MM-DDTHHMMSSZ.image_I.png`
 - `proc_out/fig/slow/lev1/YYYY/MM/DD/ovro-lwa-352.lev1_mfs_10s.YYYY-MM-DDTHHMMSSZ.image_V.png`
@@ -162,6 +162,14 @@ Realtime FITS/HDF products are published as:
 - optional with `--fch-pols I,V`: `proc_out/fits/slow/lev1/YYYY/MM/DD/ovro-lwa-352.lev1_fch_10s.YYYY-MM-DDTHHMMSSZ.image_V.fits`
 - optional with `--fch-pols I,V`: `proc_out/hdf/slow/lev1/YYYY/MM/DD/ovro-lwa-352.lev1_fch_10s.YYYY-MM-DDTHHMMSSZ.image_V.hdf`
 
+With `--ingest-lustre`, `--proc-out` is ignored and the same FITS/HDF names are published under
+`/lustre/solarpipe/realtime_pipeline/{fits,hdf}/slow/lev1/YYYY/MM/DD/`. Figure products are split by
+polarization for operations:
+
+- `/lustre/solarpipe/realtime_pipeline/figs_mfs/slow/lev1/YYYY/MM/DD/ovro-lwa-352.lev1_mfs_10s.YYYY-MM-DDTHHMMSSZ.image_I.png`
+- `/lustre/solarpipe/realtime_pipeline/figs_mfs_V/slow/lev1/YYYY/MM/DD/ovro-lwa-352.lev1_mfs_10s.YYYY-MM-DDTHHMMSSZ.image_V.png`
+- `/lustre/solarpipe/realtime_pipeline/figs_mfs/slow/synop/YYYY/MM/DD/ovro-lwa-352.synop_mfs_10s.YYYY-MM-DDTHHMMSSZ.image_I.png`
+
 The `image_V.png` quicklook uses the same 12-panel layout as the MFS I figure and plots Stokes `V` in MK. Each panel annotates `max|V|`, and the color scale is set from the `99.99` percentile of `|V|`. Both default quicklook layouts use a solar field of view of `+-7200 arcsec`.
 
 Current realtime defaults:
@@ -176,7 +184,7 @@ Current realtime defaults:
 - ready threshold: `7` visible bands
 - scan interval: `5 s`
 - pipeline jobs: `13`
-- WSClean threads: `18`
+- WSClean threads: `12`
 - fine-channel polarizations: `I` by default, or `I,V` with `--fch-pols I,V`
 - worker temporary cleanup: enabled by default with `--worker-rm-tmp`
 
@@ -212,10 +220,39 @@ lwasolarproc-realtime \
   --ingest-lustre
 ```
 
-`--ingest-lustre` overrides `--proc-out` and publishes under `/lustre/solarpipe/realtime_pipeline`.
-FITS and HDF products use `fits/slow/lev1/YYYY/MM/DD/` and `hdf/slow/lev1/YYYY/MM/DD/`.
-MFS Stokes `I` PNGs use `figs_mfs/slow/lev1/YYYY/MM/DD/`, and MFS Stokes `V` PNGs use
-`figs_mfs_V/slow/lev1/YYYY/MM/DD/`.
+`--ingest-lustre` also accepts the underscore alias `--ingest_lustre`. For non-production tests, use
+`--lustre-ingest-root` to point the same layout at a temporary root.
+
+User-level systemd service:
+
+```bash
+install -D -m 0644 /fast/rtpipe/lwasolarproc/systemd/user/lwasunproc.service \
+  ~/.config/systemd/user/lwasunproc.service
+systemctl --user daemon-reload
+systemctl --user enable --now lwasunproc
+systemctl --user status lwasunproc
+```
+
+The `lwasunproc` user service runs realtime mode with `--ingest-lustre --el-valid 12 --workers 8 --scan-interval 13 --fch-pols I --threads 12`, so it queues
+only timestamps where the Sun is at least `12 deg` above the OVRO horizon. It writes manager logs to
+`/lustre/solarpipe/realtime_pipeline/log/realtime_task_manage.log`.
+
+Common service operations:
+
+```bash
+systemctl --user status lwasunproc
+systemctl --user restart lwasunproc
+systemctl --user stop lwasunproc
+tail -f /lustre/solarpipe/realtime_pipeline/log/realtime_task_manage.log
+```
+
+If `systemctl --user status lwasunproc` fails with `Process org.freedesktop.systemd1 exited with status 1`,
+check that `DBUS_SESSION_BUS_ADDRESS` points at the live user bus:
+
+```bash
+export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
+systemctl --user status lwasunproc
+```
 
 Backlog replay example:
 
