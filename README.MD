@@ -113,7 +113,7 @@ lwasolarproc-fullband \
 
 Use `--no-bright-source-removal` to run the older path without source-list subtraction.
 
-Current default final solar WSClean imaging settings use `-quiet`, `-j 12`, `-mem 5`, `-size 384 384`, `-scale 1.8arcmin`, `-weight briggs -0.5`, `-minuv-l 10`, `-auto-threshold 3`, `-niter 10000`, `-mgain 0.8`, `-beam-fitting-size 2`, `-no-reorder`, `-no-update-model-required`, and `-no-dirty`.
+Current default final solar WSClean imaging settings use `-quiet`, `-j 20`, `-mem 5`, `-size 384 384`, `-scale 1.8arcmin`, `-weight briggs -0.5`, `-minuv-l 10`, `-auto-threshold 3`, `-niter 10000`, `-mgain 0.8`, `-beam-fitting-size 2`, `-no-reorder`, `-no-update-model-required`, and `-no-dirty`.
 
 Fine-channel imaging defaults to Stokes `I`. Use `--fch-pols I,V` to generate fine-channel Stokes `V` products in the same WSClean pass. Realtime mode accepts the same option and publishes optional FCH `V` FITS/HDF products when `combined_fch_V.fits` is produced.
 
@@ -184,7 +184,7 @@ Current realtime defaults:
 - ready threshold: `7` visible bands
 - scan interval: `5 s`
 - pipeline jobs: `13`
-- WSClean threads: `12`
+- WSClean threads: `20`
 - fine-channel polarizations: `I` by default, or `I,V` with `--fch-pols I,V`
 - worker temporary cleanup: enabled by default with `--worker-rm-tmp`
 
@@ -233,7 +233,7 @@ systemctl --user enable --now lwasunproc
 systemctl --user status lwasunproc
 ```
 
-The `lwasunproc` user service runs realtime mode with `--ingest-lustre --el-valid 12 --workers 8 --scan-interval 13 --fch-pols I --threads 12`, so it queues
+The `lwasunproc` user service runs realtime mode with `--ingest-lustre --el-valid 12 --workers 7 --scan-interval 13 --fch-pols I --threads 20`, so it queues
 only timestamps where the Sun is at least `12 deg` above the OVRO horizon. It writes manager logs to
 `/lustre/solarpipe/realtime_pipeline/log/realtime_task_manage.log`.
 

@@ -215,12 +215,20 @@ def is_file_safe(path: Path) -> bool:
         return False
 
 
+def is_nonempty_file_safe(path: Path) -> bool:
+    try:
+        return path.is_file() and path.stat().st_size > 0
+    except OSError as exc:
+        logging.debug("Cannot stat file candidate %s: %s", path, exc)
+        return False
+
+
 def source_ms_input_path(slow_root: Path, band: str, timestamp: str, source_layout: str = "structured") -> Path | None:
     ms_path = source_ms_path(slow_root, band, timestamp, source_layout)
     if is_dir_safe(ms_path):
         return ms_path
     tar_path = source_ms_tar_path(slow_root, band, timestamp, source_layout)
-    if is_file_safe(tar_path):
+    if is_nonempty_file_safe(tar_path):
         return tar_path
     return None
 
@@ -1065,7 +1073,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--end-timestamp", help="Only consider timestamps at or before YYYYMMDD_HHMMSS.")
     parser.add_argument("--cadence-s", type=float, default=10.0, help="Minimum allowed seconds between enqueued timestamps in all modes.")
     parser.add_argument("--pipeline-jobs", type=int, default=13)
-    parser.add_argument("--threads", type=int, default=12)
+    parser.add_argument("--threads", type=int, default=20)
     parser.add_argument("--fch-pols", default="I", help="Comma-separated polarizations for the fine-channel WSClean pass, for example I or I,V.")
     parser.add_argument("--cleanup-failed", action="store_true")
     parser.add_argument(

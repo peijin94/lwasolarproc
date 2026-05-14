@@ -9,7 +9,7 @@ Type=simple
 WorkingDirectory=/fast/rtpipe
 Environment=PYTHONUNBUFFERED=1
 Environment=LWASOLARPROC_RUNTIME_DIR=/fast/rtpipe/env/lwa/runtime
-ExecStart=/bin/bash -lc 'source /fast/rtpipe/use_lwa.sh >/dev/null && exec /fast/rtpipe/env/lwa/bin/python -m lwasolarproc.realtime_task_manage --mode realtime --slow-root /lustre/pipeline/slow --caltable-dir /fast/rtpipe/caltab_h5parm --proc-tmp /dev/shm/tmp_pipe_dir/lwasunproc/proc_tmp --ingest-lustre --el-valid 12 --workers 8 --scan-interval 13 --fch-pols I --threads 12'
+ExecStart=/bin/bash -lc 'source /fast/rtpipe/use_lwa.sh >/dev/null && exec /fast/rtpipe/env/lwa/bin/python -m lwasolarproc.realtime_task_manage --mode realtime --slow-root /lustre/pipeline/slow --caltable-dir /fast/rtpipe/caltab_h5parm --proc-tmp /dev/shm/tmp_pipe_dir/lwasunproc/proc_tmp --ingest-lustre --el-valid 12 --workers 7 --scan-interval 13 --fch-pols I --threads 20'
 Restart=always
 RestartSec=15
 KillSignal=SIGINT

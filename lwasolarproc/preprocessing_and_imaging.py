@@ -78,7 +78,7 @@ class PipelineConfig:
     dp3_bin: str = DEFAULT_DP3_BIN
     aoflagger_strategy: Path = DEFAULT_AOFLAGGER_STRATEGY
     casarc: Path | None = DEFAULT_CASARC
-    threads: int = 12
+    threads: int = 20
     avg_chanbin: int = 4
     column: str = "CORRECTED_DATA"
     observatory: str = "OVRO"
@@ -1307,7 +1307,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--min-freq", type=int, default=23)
     parser.add_argument("--max-freq", type=int, default=82)
     parser.add_argument("--jobs", type=int, default=1)
-    parser.add_argument("--threads", type=int, default=12)
+    parser.add_argument("--threads", type=int, default=20)
     parser.add_argument("--dp3-bin", default=DEFAULT_DP3_BIN)
     parser.add_argument("--aoflagger-strategy", type=Path, default=DEFAULT_AOFLAGGER_STRATEGY)
     parser.add_argument("--avg-chanbin", type=int, default=4)

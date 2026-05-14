@@ -145,7 +145,7 @@ The central configuration object is `PipelineConfig`.
 
 Important defaults:
 
-- `threads=12`
+- `threads=20`
 - `avg_chanbin=4`
 - `run_phase_selfcal=True`
 - `selfcal_caltype="diagonalphase"`
@@ -273,7 +273,7 @@ The package uses a `WSCleanOptions` dataclass rather than ad hoc shell string co
 Current final solar imaging defaults:
 
 - `-quiet`
-- `-j 12`
+- `-j 20`
 - `-mem 5`
 - `-size 384 384`
 - `-scale 1.8arcmin`
