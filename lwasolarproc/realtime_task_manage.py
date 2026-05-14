@@ -46,6 +46,7 @@ TIMESTAMP_RE = re.compile(r"(?P<stamp>\d{8}_\d{6})_(?P<band>\d+MHz)\.ms(?:\.tar)
 OUTPUT_STREAM = "slow"
 OUTPUT_LEVEL = "lev1"
 OUTPUT_PREFIX = "ovro-lwa-352.lev1"
+LUSTRE_INGEST_ROOT = Path("/lustre/solarpipe/realtime_pipeline")
 
 
 @dataclass(frozen=True)
@@ -60,6 +61,7 @@ class WorkerConfig:
     source_layout: str
     proc_tmp: Path
     proc_out: Path
+    ingest_lustre: bool
     caltable_dir: Path
     bands: tuple[str, ...]
     worker_id: int
@@ -331,13 +333,17 @@ def atomic_compress_fits(src: Path, dst: Path) -> Path:
     return dst
 
 
-def ensure_output_dirs(proc_out: Path) -> dict[str, Path]:
+def ensure_output_dirs(proc_out: Path, *, ingest_lustre: bool = False) -> dict[str, Path]:
     dirs = {
         "fits": proc_out / "fits",
         "hdf": proc_out / "hdf",
-        "fig": proc_out / "fig",
         "log": proc_out / "log",
     }
+    if ingest_lustre:
+        dirs["figs_mfs"] = proc_out / "figs_mfs"
+        dirs["figs_mfs_V"] = proc_out / "figs_mfs_V"
+    else:
+        dirs["fig"] = proc_out / "fig"
     for path in dirs.values():
         path.mkdir(parents=True, exist_ok=True)
     return dirs
@@ -358,7 +364,9 @@ def product_path(proc_out: Path, file_type: str, timestamp: str, product: str, p
     return product_dir(proc_out, file_type, timestamp) / product_filename(timestamp, product, pol, ext)
 
 
-def realtime_output_paths(proc_out: Path, timestamp: str) -> dict[str, Path]:
+def realtime_output_paths(proc_out: Path, timestamp: str, *, ingest_lustre: bool = False) -> dict[str, Path]:
+    mfs_i_fig_type = "figs_mfs" if ingest_lustre else "fig"
+    mfs_v_fig_type = "figs_mfs_V" if ingest_lustre else "fig"
     return {
         "mfs_i_fits": product_path(proc_out, "fits", timestamp, "mfs", "I"),
         "mfs_i_hdf": product_path(proc_out, "hdf", timestamp, "mfs", "I"),
@@ -368,8 +376,8 @@ def realtime_output_paths(proc_out: Path, timestamp: str) -> dict[str, Path]:
         "fch_i_hdf": product_path(proc_out, "hdf", timestamp, "fch", "I"),
         "fch_v_fits": product_path(proc_out, "fits", timestamp, "fch", "V"),
         "fch_v_hdf": product_path(proc_out, "hdf", timestamp, "fch", "V"),
-        "mfs_i_png": product_path(proc_out, "fig", timestamp, "mfs", "I", extension="png"),
-        "mfs_v_png": product_path(proc_out, "fig", timestamp, "mfs", "V", extension="png"),
+        "mfs_i_png": product_path(proc_out, mfs_i_fig_type, timestamp, "mfs", "I", extension="png"),
+        "mfs_v_png": product_path(proc_out, mfs_v_fig_type, timestamp, "mfs", "V", extension="png"),
     }
 
 
@@ -449,7 +457,13 @@ def _safe_tar_members(tar: tarfile.TarFile, destination: Path) -> Sequence[tarfi
     return safe_members
 
 
-def publish_outputs(task_dir: Path, proc_out: Path, timestamp: str) -> tuple[str, ...]:
+def publish_outputs(
+    task_dir: Path,
+    proc_out: Path,
+    timestamp: str,
+    *,
+    ingest_lustre: bool = False,
+) -> tuple[str, ...]:
     combined_dir = task_dir / "run" / "combined"
     run_dir = task_dir / "run"
     source_products = {
@@ -465,7 +479,7 @@ def publish_outputs(task_dir: Path, proc_out: Path, timestamp: str) -> tuple[str
     if missing:
         raise FileNotFoundError(f"Missing combined products: {missing}")
 
-    outputs = realtime_output_paths(proc_out, timestamp)
+    outputs = realtime_output_paths(proc_out, timestamp, ingest_lustre=ingest_lustre)
     published: list[Path] = []
     published.append(atomic_copy(source_products["mfs_i_fits"], outputs["mfs_i_fits"]))
     published.append(atomic_compress_fits(outputs["mfs_i_fits"], outputs["mfs_i_hdf"]))
@@ -542,7 +556,12 @@ def run_worker_task(timestamp: str, config: WorkerConfig) -> WorkerResult:
                     detail = "; ".join(f"{result.freq_mhz}MHz: {result.error}" for result in failures)
                     raise RuntimeError(f"Fullband pipeline failures: {detail}")
 
-                output_paths = publish_outputs(task_dir, config.proc_out, timestamp)
+                output_paths = publish_outputs(
+                    task_dir,
+                    config.proc_out,
+                    timestamp,
+                    ingest_lustre=config.ingest_lustre,
+                )
 
         if config.worker_rm_tmp:
             shutil.rmtree(task_dir)
@@ -577,6 +596,7 @@ class RealtimeManager:
         self.source_layout = "flat" if self.mode == "event" else "structured"
         self.proc_tmp = args.proc_tmp.expanduser().resolve()
         self.proc_out = args.proc_out.expanduser().resolve()
+        self.ingest_lustre = args.ingest_lustre
         self.caltable_dir = args.caltable_dir.expanduser().resolve()
         self.bands = parse_bands(args.bands)
         self.trigger_band = args.trigger_band
@@ -629,7 +649,7 @@ class RealtimeManager:
         self.last_enqueued_timestamp: str | None = None
         self.last_dispatch_monotonic: float | None = None
 
-        self.output_dirs = ensure_output_dirs(self.proc_out)
+        self.output_dirs = ensure_output_dirs(self.proc_out, ingest_lustre=self.ingest_lustre)
         for worker_id in range(self.workers):
             (self.proc_tmp / f"worker_{worker_id}").mkdir(parents=True, exist_ok=True)
         if self.mode in {"backlog", "event"}:
@@ -800,6 +820,7 @@ class RealtimeManager:
                 source_layout=self.source_layout,
                 proc_tmp=self.proc_tmp,
                 proc_out=self.proc_out,
+                ingest_lustre=self.ingest_lustre,
                 caltable_dir=self.caltable_dir,
                 bands=self.bands,
                 worker_id=worker_id,
@@ -939,6 +960,20 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--slow-root", "--data-root", "--data-dir", dest="slow_root", type=Path, default=Path("/lustre/pipeline/slow"))
     parser.add_argument("--proc-tmp", type=Path, default=Path("./proc_tmp"))
     parser.add_argument("--proc-out", type=Path, default=Path("./proc_out"))
+    parser.add_argument(
+        "--ingest-lustre",
+        "--ingest_lustre",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Publish products to the operational Lustre realtime_pipeline layout, overriding --proc-out.",
+    )
+    parser.add_argument(
+        "--lustre-ingest-root",
+        "--lustre_ingest_root",
+        type=Path,
+        default=LUSTRE_INGEST_ROOT,
+        help="Root directory used when --ingest-lustre is enabled.",
+    )
     parser.add_argument("--caltable-dir", type=Path, default=Path("/fast/rtpipe/caltab_h5parm"))
     parser.add_argument("--bands", default=",".join(PRODUCTION_BANDS))
     parser.add_argument("--trigger-band", default="55MHz")
@@ -975,6 +1010,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def validate_args(args: argparse.Namespace) -> None:
     args.mode = normalize_mode(args.mode)
+    if args.ingest_lustre:
+        args.proc_out = args.lustre_ingest_root
     if args.mode not in {"realtime", "backlog", "event"}:
         raise ValueError(f"Invalid mode: {args.mode}")
     if args.workers < 1:

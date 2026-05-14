@@ -201,6 +201,22 @@ lwasolarproc-realtime \
   --once
 ```
 
+Operational Lustre ingest publication:
+
+```bash
+lwasolarproc-realtime \
+  --mode realtime \
+  --slow-root /lustre/pipeline/slow \
+  --caltable-dir /fast/rtpipe/caltab_h5parm \
+  --proc-tmp /dev/shm/tmp_pipe_dir/proc_realtime \
+  --ingest-lustre
+```
+
+`--ingest-lustre` overrides `--proc-out` and publishes under `/lustre/solarpipe/realtime_pipeline`.
+FITS and HDF products use `fits/slow/lev1/YYYY/MM/DD/` and `hdf/slow/lev1/YYYY/MM/DD/`.
+MFS Stokes `I` PNGs use `figs_mfs/slow/lev1/YYYY/MM/DD/`, and MFS Stokes `V` PNGs use
+`figs_mfs_V/slow/lev1/YYYY/MM/DD/`.
+
 Backlog replay example:
 
 ```bash
