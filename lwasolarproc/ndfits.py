@@ -508,12 +508,14 @@ def wrap(fitsfiles, outfitsfile=None, docompress=False, mask=None, fix_invalid=T
             cbmaj = []
             cbmin = []
             cbpa = []
+            cpbgain = []
             for sidx, fitsf in enumerate(fits_exist):
                 hdu = fits.open(fitsf)
                 cfreqs.append(hdu[-1].header['RESTFRQ'])
                 cbmaj.append(hdu[-1].header['BMAJ'])
                 cbmin.append(hdu[-1].header['BMIN'])
                 cbpa.append(hdu[-1].header['BPA'])
+                cpbgain.append(hdu[-1].header.get('PBGAIN', np.nan))
                 for pidx in range(npol):
                     if hdu[-1].data.ndim == 2:
                         data[pidx, idx_fits_exist[sidx], :, :] = hdu[-1].data
@@ -526,12 +528,14 @@ def wrap(fitsfiles, outfitsfile=None, docompress=False, mask=None, fix_invalid=T
             cbmaj = np.array(cbmaj)
             cbmin = np.array(cbmin)
             cbpa = np.array(cbpa)
+            cpbgain = np.array(cpbgain)
             indfreq = np.argsort(cfreqs)
             cfreqs = cfreqs[indfreq]
             cdelts = cdelts[indfreq]
             cbmaj = cbmaj[indfreq]
             cbmin = cbmin[indfreq]
             cbpa = cbpa[indfreq]
+            cpbgain = cpbgain[indfreq]
             for pidx in range(npol):
                 data[pidx, ...] = data[pidx, indfreq]
 
@@ -568,6 +572,7 @@ def wrap(fitsfiles, outfitsfile=None, docompress=False, mask=None, fix_invalid=T
             cbmaj = []
             cbmin = []
             cbpa = []
+            cpbgain = []
             for sidx, fitsf in enumerate(fits_exist):
                 hdu = fits.open(fitsf)
 
@@ -576,6 +581,7 @@ def wrap(fitsfiles, outfitsfile=None, docompress=False, mask=None, fix_invalid=T
                 cbmaj.append(hdu[-1].header['BMAJ'])
                 cbmin.append(hdu[-1].header['BMIN'])
                 cbpa.append(hdu[-1].header['BPA'])
+                cpbgain.append(hdu[-1].header.get('PBGAIN', np.nan))
 
                 for pidx in range(npol):
                     if hdu[-1].data.ndim == 2:
@@ -588,6 +594,7 @@ def wrap(fitsfiles, outfitsfile=None, docompress=False, mask=None, fix_invalid=T
             cbmaj = np.array(cbmaj)
             cbmin = np.array(cbmin)
             cbpa = np.array(cbpa)
+            cpbgain = np.array(cpbgain)
 
             df = np.nanmean(np.diff(cfreqs) / np.diff(idx_fits_exist))  ## in case some of the band is missing
             header['cdelt3'] = df
@@ -611,7 +618,8 @@ def wrap(fitsfiles, outfitsfile=None, docompress=False, mask=None, fix_invalid=T
         col3 = fits.Column(name='bmaj', format='E', array=cbmaj)
         col4 = fits.Column(name='bmin', format='E', array=cbmin)
         col5 = fits.Column(name='bpa', format='E', array=cbpa)
-        tbhdu = fits.BinTableHDU.from_columns([col1, col2, col3, col4, col5])
+        col6 = fits.Column(name='pbgain', format='E', array=cpbgain)
+        tbhdu = fits.BinTableHDU.from_columns([col1, col2, col3, col4, col5, col6])
 
         if docompress:
             if fix_invalid:
