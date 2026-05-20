@@ -25,7 +25,6 @@ from .util import compress_fits_to_h5, filter_ovro_timestamps_by_solar_elevation
 
 
 PRODUCTION_BANDS = [
-    "13MHz",
     "18MHz",
     "23MHz",
     "27MHz",
@@ -46,6 +45,8 @@ TIMESTAMP_RE = re.compile(r"(?P<stamp>\d{8}_\d{6})_(?P<band>\d+MHz)\.ms(?:\.tar)
 OUTPUT_STREAM = "slow"
 OUTPUT_LEVEL = "lev1"
 OUTPUT_PREFIX = "ovro-lwa-352.lev1"
+REFRACTION_OUTPUT_LEVEL = "lev15"
+REFRACTION_OUTPUT_PREFIX = "ovro-lwa-352.lev1.5"
 SYNOP_OUTPUT_LEVEL = "synop"
 SYNOP_OUTPUT_PREFIX = "ovro-lwa-352.synop"
 LUSTRE_INGEST_ROOT = Path("/lustre/solarpipe/realtime_pipeline")
@@ -73,6 +74,8 @@ class WorkerConfig:
     pipeline_jobs: int
     threads: int
     fch_pols: str
+    do_refraction: bool
+    logging: bool
     cleanup_failed: bool
     worker_rm_tmp: bool
 
@@ -107,13 +110,18 @@ def redirect_process_fds(handle):
         os.close(stderr_fd)
 
 
-def setup_worker_logging(log_path: Path) -> None:
+def setup_worker_logging(log_path: Path | None) -> None:
     logging.Formatter.converter = time.gmtime
+    handlers: list[logging.Handler]
+    if log_path is None:
+        handlers = [logging.NullHandler()]
+    else:
+        handlers = [logging.FileHandler(log_path, encoding="utf-8")]
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)sZ %(levelname)s %(message)s",
         datefmt="%Y-%m-%dT%H:%M:%S",
-        handlers=[logging.FileHandler(log_path, encoding="utf-8")],
+        handlers=handlers,
         force=True,
     )
 
@@ -427,6 +435,46 @@ def realtime_output_paths(proc_out: Path, timestamp: str, *, ingest_lustre: bool
         "fch_i_hdf": product_path(proc_out, "hdf", timestamp, "fch", "I", "hdf"),
         "fch_v_fits": product_path(proc_out, "fits", timestamp, "fch", "V", "fits"),
         "fch_v_hdf": product_path(proc_out, "hdf", timestamp, "fch", "V", "hdf"),
+        "mfs_i_refraction_fits": product_path(
+            proc_out,
+            "fits",
+            timestamp,
+            "mfs",
+            "I",
+            "fits",
+            output_level=REFRACTION_OUTPUT_LEVEL,
+            output_prefix=REFRACTION_OUTPUT_PREFIX,
+        ),
+        "mfs_i_refraction_hdf": product_path(
+            proc_out,
+            "hdf",
+            timestamp,
+            "mfs",
+            "I",
+            "hdf",
+            output_level=REFRACTION_OUTPUT_LEVEL,
+            output_prefix=REFRACTION_OUTPUT_PREFIX,
+        ),
+        "fch_i_refraction_fits": product_path(
+            proc_out,
+            "fits",
+            timestamp,
+            "fch",
+            "I",
+            "fits",
+            output_level=REFRACTION_OUTPUT_LEVEL,
+            output_prefix=REFRACTION_OUTPUT_PREFIX,
+        ),
+        "fch_i_refraction_hdf": product_path(
+            proc_out,
+            "hdf",
+            timestamp,
+            "fch",
+            "I",
+            "hdf",
+            output_level=REFRACTION_OUTPUT_LEVEL,
+            output_prefix=REFRACTION_OUTPUT_PREFIX,
+        ),
         "mfs_i_png": product_path(
             proc_out,
             fig_output_dir("I", ingest_lustre=ingest_lustre),
@@ -444,17 +492,16 @@ def realtime_output_paths(proc_out: Path, timestamp: str, *, ingest_lustre: bool
             "png",
         ),
     }
-    if ingest_lustre:
-        paths["mfs_i_synop_png"] = product_path(
-            proc_out,
-            LUSTRE_MFS_I_FIG_DIR,
-            timestamp,
-            "mfs",
-            "I",
-            "png",
-            output_level=SYNOP_OUTPUT_LEVEL,
-            output_prefix=SYNOP_OUTPUT_PREFIX,
-        )
+    paths["mfs_i_synop_png"] = product_path(
+        proc_out,
+        fig_output_dir("I", ingest_lustre=ingest_lustre),
+        timestamp,
+        "mfs",
+        "I",
+        "png",
+        output_level=SYNOP_OUTPUT_LEVEL,
+        output_prefix=SYNOP_OUTPUT_PREFIX,
+    )
     return paths
 
 
@@ -550,6 +597,9 @@ def publish_outputs(
         "fch_v_fits": combined_dir / "combined_fch_V.fits",
         "mfs_i_png": combined_dir / "combined_mfs_I.default_plot.png",
         "mfs_v_png": combined_dir / "combined_mfs_V.default_plot.png",
+        "mfs_i_refraction_fits": combined_dir / "combined_mfs_I.lev1.5.fits",
+        "fch_i_refraction_fits": combined_dir / "combined_fch_I.lev1.5.fits",
+        "mfs_i_refraction_png": combined_dir / "combined_mfs_I.lev1.5.default_plot.png",
     }
     required_keys = ("mfs_i_fits", "mfs_v_fits", "fch_i_fits", "mfs_i_png", "mfs_v_png")
     missing = [str(source_products[key]) for key in required_keys if not source_products[key].exists()]
@@ -567,9 +617,19 @@ def publish_outputs(
     if source_products["fch_v_fits"].exists():
         published.append(atomic_copy(source_products["fch_v_fits"], outputs["fch_v_fits"]))
         published.append(atomic_compress_fits(outputs["fch_v_fits"], outputs["fch_v_hdf"]))
+    if source_products["mfs_i_refraction_fits"].exists():
+        published.append(atomic_copy(source_products["mfs_i_refraction_fits"], outputs["mfs_i_refraction_fits"]))
+        published.append(atomic_compress_fits(outputs["mfs_i_refraction_fits"], outputs["mfs_i_refraction_hdf"]))
+    if source_products["fch_i_refraction_fits"].exists():
+        published.append(atomic_copy(source_products["fch_i_refraction_fits"], outputs["fch_i_refraction_fits"]))
+        published.append(atomic_compress_fits(outputs["fch_i_refraction_fits"], outputs["fch_i_refraction_hdf"]))
     published.append(atomic_copy(source_products["mfs_i_png"], outputs["mfs_i_png"]))
-    if ingest_lustre:
-        published.append(atomic_copy(source_products["mfs_i_png"], outputs["mfs_i_synop_png"]))
+    synop_source = (
+        source_products["mfs_i_refraction_png"]
+        if source_products["mfs_i_refraction_png"].exists()
+        else source_products["mfs_i_png"]
+    )
+    published.append(atomic_copy(synop_source, outputs["mfs_i_synop_png"]))
     published.append(atomic_copy(source_products["mfs_v_png"], outputs["mfs_v_png"]))
     summary_path = run_dir / "preprocessing_and_imaging_summary.tsv"
     if summary_path.exists():
@@ -595,8 +655,9 @@ def run_worker_task(timestamp: str, config: WorkerConfig) -> WorkerResult:
         run_dir = task_dir / "run"
         task_dir.mkdir(parents=True, exist_ok=True)
 
-        setup_worker_logging(task_log)
-        with task_log.open("a", encoding="utf-8") as handle:
+        setup_worker_logging(task_log if config.logging else None)
+        worker_output = task_log.open("a", encoding="utf-8") if config.logging else Path(os.devnull).open("w", encoding="utf-8")
+        with worker_output as handle:
             with (
                 redirect_process_fds(handle),
                 contextlib.redirect_stdout(handle),
@@ -620,6 +681,7 @@ def run_worker_task(timestamp: str, config: WorkerConfig) -> WorkerResult:
                     copy_ms=False,
                     plot_mfs_i=True,
                     fch_pols=config.fch_pols,
+                    do_refraction=config.do_refraction,
                 )
                 results = process_fullband(
                     input_dir,
@@ -693,6 +755,8 @@ class RealtimeManager:
         self.pipeline_jobs = args.pipeline_jobs
         self.threads = args.threads
         self.fch_pols = args.fch_pols
+        self.do_refraction = args.do_refraction
+        self.logging = args.logging
         self.cleanup_failed = args.cleanup_failed
         self.worker_rm_tmp = args.worker_rm_tmp
         self.once = args.once
@@ -906,6 +970,8 @@ class RealtimeManager:
                 pipeline_jobs=self.pipeline_jobs,
                 threads=self.threads,
                 fch_pols=self.fch_pols,
+                do_refraction=self.do_refraction,
+                logging=self.logging,
                 cleanup_failed=self.cleanup_failed,
                 worker_rm_tmp=self.worker_rm_tmp,
             )
@@ -1007,7 +1073,10 @@ class RealtimeManager:
         logging.info("Task manager stopped; done=%d failed=%d", len(self.done), len(self.failed))
         return 1 if self.failed else 0
 
-def setup_logging(proc_out: Path) -> None:
+def setup_logging(proc_out: Path, *, enabled: bool = True) -> None:
+    if not enabled:
+        logging.basicConfig(handlers=[logging.NullHandler()], force=True)
+        return
     log_dir = proc_out / "log"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / "realtime_task_manage.log"
@@ -1065,7 +1134,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=15.0,
         help="Minimum seconds between dispatches when more than one worker is idle.",
     )
-    parser.add_argument("--el-valid", type=float, default=12.0, help="Queue only when Sun elevation at OVRO is at least this many degrees.")
+    parser.add_argument("--el-valid", type=float, default=13.5, help="Queue only when Sun elevation at OVRO is at least this many degrees.")
     parser.add_argument("--ready-min-bands", type=int, default=7)
     parser.add_argument("--scan-interval", type=float, default=5.0)
     parser.add_argument("--scan-lookback-hours", type=int, default=1)
@@ -1073,8 +1142,20 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--end-timestamp", help="Only consider timestamps at or before YYYYMMDD_HHMMSS.")
     parser.add_argument("--cadence-s", type=float, default=10.0, help="Minimum allowed seconds between enqueued timestamps in all modes.")
     parser.add_argument("--pipeline-jobs", type=int, default=13)
-    parser.add_argument("--threads", type=int, default=20)
+    parser.add_argument("--threads", type=int, default=16)
     parser.add_argument("--fch-pols", default="I", help="Comma-separated polarizations for the fine-channel WSClean pass, for example I or I,V.")
+    parser.add_argument(
+        "--do-refraction",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Apply lwasolarutl refraction correction to Stokes I combined products and publish level 1.5 I FITS/HDF plus corrected synop I PNG when successful.",
+    )
+    parser.add_argument(
+        "--logging",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Write manager and worker logs. Use --no-logging for realtime operation with reduced log IO.",
+    )
     parser.add_argument("--cleanup-failed", action="store_true")
     parser.add_argument(
         "--worker-rm-tmp",
@@ -1133,7 +1214,7 @@ def validate_args(args: argparse.Namespace) -> None:
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     validate_args(args)
-    setup_logging(args.proc_out.expanduser().resolve())
+    setup_logging(args.proc_out.expanduser().resolve(), enabled=args.logging)
     manager = RealtimeManager(args)
     return manager.run()
 

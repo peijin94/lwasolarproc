@@ -11,6 +11,7 @@ requires-python = ">=3.10"
 dependencies = [
     "astropy",
     "h5py",
+    "lwasolarutl",
     "matplotlib",
     "mpl-animators>=1.2.0",
     "numpy",
@@ -35,3 +36,6 @@ lwasolarproc = [
     "LWA_sun_PZ.lua",
     "settings_mat_file/*.mat",
 ]
+
+[tool.uv.sources]
+lwasolarutl = { path = "../lwa-solar-util", editable = true }

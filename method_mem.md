@@ -8,14 +8,16 @@ This document is the technical memory for the current `lwasolarproc` package sta
 
 1. full-band preprocessing and imaging from per-band Measurement Sets
 2. FITS post-processing, helioprojective conversion, and HDF5 compression
-3. publication-quality quicklook visualization for Stokes `I` and `V`
-4. a realtime orchestrator that watches the Lustre slow-data tree and dispatches bounded full-band jobs to worker processes
+3. publication-quality quicklook visualization for Stokes `I` and `V` through `lwasolarutl`
+4. optional `lwasolarutl` refraction correction for Stokes `I` level 1.5 products
+5. a realtime orchestrator that watches the Lustre slow-data tree and dispatches bounded full-band jobs to worker processes
 
 The package is intentionally built without CASA runtime dependencies in the main path. It uses:
 
 - `DP3` for applycal, AOFlagger, averaging, phase selfcal, and source subtraction
 - `WSClean` for imaging and source-list generation
-- `astropy`, `sunpy`, `reproject`, and `scikit-image` for FITS coordinate conversion and visualization
+- `astropy`, `sunpy`, `reproject`, and `scikit-image` for FITS coordinate conversion
+- `lwasolarutl` from `lwa-solar-util` for shared NDFITS wrapping, refraction-correction helpers, and visualization
 - `h5py` for HDF5 export
 
 The design goal is a reusable Python package whose command-line entry points reproduce the working test workflow closely enough that the package can replace those scripts.
@@ -53,7 +55,7 @@ Important Python modules:
   - WSClean command construction and execution
 - `lwasolarproc/coords.py`
   - J2000 to helioprojective conversion and beam/K correction
-- `lwasolarproc/visualization.py`
+- `lwasolarutl.visualization`
   - default Stokes `I` and `V` quicklooks
 - `lwasolarproc/util.py`
   - HDF5 compression/recovery and realtime helper utilities
@@ -65,7 +67,7 @@ Important Python modules:
   - paths to packaged resources such as the AOFlagger Lua strategy
 - `lwasolarproc/calibration.py`
   - equalizer and day/night gain conversion helpers
-- `lwasolarproc/ndfits.py`
+- `lwasolarutl.ndfits`
   - multi-frequency FITS wrapping helpers
 - `lwasolarproc/realtime_task_manage.py`
   - manager/worker realtime orchestration
@@ -273,8 +275,8 @@ The package uses a `WSCleanOptions` dataclass rather than ad hoc shell string co
 Current final solar imaging defaults:
 
 - `-quiet`
-- `-j 20`
-- `-mem 5`
+- `-j 16`
+- `-mem 6`
 - `-size 384 384`
 - `-scale 1.8arcmin`
 - `-weight briggs -0.5`
@@ -358,9 +360,28 @@ Compression behavior:
 
 Realtime publication uses the FITS-to-HDF conversion automatically after copying final FITS products into the dated output tree under `proc_out`.
 
+## Refraction Correction
+
+Refraction correction is opt-in with `do_refraction=False` by default, exposed as `--do-refraction` in both the fullband and realtime entry points.
+
+When enabled, the pipeline uses `lwasolarutl.refraction_corr.refraction_fit_param(overbright=2.5e6)` and `apply_refra_coeff()` after combined helioprojective FITS products are created. The overbright gate keeps frames with bright sources from forcing a refraction solution. Only Stokes `I` is corrected:
+
+- `combined_mfs_I.fits` -> `combined_mfs_I.lev1.5.fits`
+- `combined_fch_I.fits` -> `combined_fch_I.lev1.5.fits`
+
+Stokes `V` remains level 1 because polarization products do not need refraction correction in the operational path.
+
+Realtime Lustre ingest publishes successful corrected Stokes `I` products under `fits/slow/lev15/...` and `hdf/slow/lev15/...` with filenames such as:
+
+```text
+ovro-lwa-352.lev1.5_fch_10s.2026-05-18T171038Z.image_I.fits
+```
+
+The synoptic Stokes `I` PNG uses the level 1.5 MFS plot when refraction correction succeeds. If the fit or apply step fails, the synop PNG falls back to the level 1 plot. Local runs publish it under `fig/slow/synop/...`; Lustre ingest publishes it under `figs_mfs/slow/synop/...`.
+
 ## Visualization Design
 
-Visualization lives in [visualization.py](/fast/rtpipe/lwasolarproc/lwasolarproc/visualization.py).
+Visualization lives in `lwasolarutl.visualization`.
 
 Two default quicklooks matter operationally:
 
@@ -546,12 +567,14 @@ Published realtime output names follow:
 - quicklooks:
   - `proc_out/fig/slow/lev1/YYYY/MM/DD/ovro-lwa-352.lev1_mfs_10s.YYYY-MM-DDTHHMMSSZ.image_I.png`
   - `proc_out/fig/slow/lev1/YYYY/MM/DD/ovro-lwa-352.lev1_mfs_10s.YYYY-MM-DDTHHMMSSZ.image_V.png`
+  - `proc_out/fig/slow/synop/YYYY/MM/DD/ovro-lwa-352.synop_mfs_10s.YYYY-MM-DDTHHMMSSZ.image_I.png`
 
 Output directories:
 
 - `proc_out/fits/slow/lev1/YYYY/MM/DD`
 - `proc_out/hdf/slow/lev1/YYYY/MM/DD`
 - `proc_out/fig/slow/lev1/YYYY/MM/DD`
+- `proc_out/fig/slow/synop/YYYY/MM/DD`
 - `proc_out/log`
 
 ### Log Files
@@ -563,6 +586,8 @@ Manager log:
 Per-worker logs:
 
 - `proc_out/log/YYYYMMDD_HHMMSS.worker_i.log`
+
+Realtime service mode uses `--no-logging` to reduce operational IO. With this flag, the manager file logger is disabled and worker subprocess stdout/stderr is redirected to `/dev/null`; per-task summary and combined-product TSV files are still published.
 
 Per-task published summaries:
 
@@ -583,9 +608,9 @@ Current packaged defaults are:
 - ready minimum bands: `7`
 - scan interval: `5 s`
 - scan lookback: `1 hour`
-- solar elevation gate: `12 deg`
+- solar elevation gate: `13.5 deg`
 - pipeline jobs: `13`
-- WSClean threads per task: `18`
+- WSClean threads per task: `16`
 
 These defaults are a compromise between throughput and Lustre pressure, not a claim that the values are globally optimal.
 

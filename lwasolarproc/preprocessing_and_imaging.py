@@ -78,7 +78,7 @@ class PipelineConfig:
     dp3_bin: str = DEFAULT_DP3_BIN
     aoflagger_strategy: Path = DEFAULT_AOFLAGGER_STRATEGY
     casarc: Path | None = DEFAULT_CASARC
-    threads: int = 20
+    threads: int = 16
     avg_chanbin: int = 4
     column: str = "CORRECTED_DATA"
     observatory: str = "OVRO"
@@ -123,6 +123,7 @@ class PipelineConfig:
     postprocess_usebeam: str = "Memo178Beam"
     postprocess_beam_correction: bool = True
     postprocess_to_kelvin: bool = True
+    do_refraction: bool = False
     plot_mfs_i: bool = True
     plot_mfs_v: bool = True
     plot_dpi: int = 150
@@ -1024,11 +1025,11 @@ def _as_paths(value: object) -> list[Path]:
 
 
 def _import_postprocess_helpers():
+    from lwasolarutl import ndfits
+
     try:
-        from . import ndfits
         from .coords import fitsj2000tohelio
     except ImportError:  # pragma: no cover - supports direct script execution.
-        import ndfits  # type: ignore
         from coords import fitsj2000tohelio  # type: ignore
     return fitsj2000tohelio, ndfits
 
@@ -1112,16 +1113,18 @@ def postprocess_fullband_products(config: PipelineConfig, results: Sequence[Band
     mfs_v_plot = plot_mfs_v_default(config, combined)
     if mfs_v_plot is not None:
         plot_outputs["mfs_V_plot"] = mfs_v_plot
+    if config.do_refraction:
+        refraction_outputs = refraction_correct_i_products(config, combined)
+        combined.update(refraction_outputs)
+        refraction_plot = plot_mfs_i_refraction_default(config, combined)
+        if refraction_plot is not None:
+            plot_outputs["mfs_I_refraction_plot"] = refraction_plot
     write_combined_summary(output_dir, {**combined, **plot_outputs})
     return combined
 
 
-def plot_mfs_i_default(config: PipelineConfig, combined: Mapping[str, Path]) -> Path | None:
+def plot_mfs_i_fits(config: PipelineConfig, mfs_i: Path, plot_path: Path) -> Path | None:
     if not config.plot_mfs_i:
-        return None
-    mfs_i = combined.get("mfs_I")
-    if mfs_i is None:
-        print("[plot] skip mfs_I: combined FITS not found")
         return None
 
     import matplotlib  # type: ignore
@@ -1129,17 +1132,29 @@ def plot_mfs_i_default(config: PipelineConfig, combined: Mapping[str, Path]) -> 
     matplotlib.use("Agg", force=True)
     import matplotlib.pyplot as plt  # type: ignore
 
-    try:
-        from .visualization import slow_pipeline_default_plot
-    except ImportError:  # pragma: no cover - supports direct script execution.
-        from visualization import slow_pipeline_default_plot  # type: ignore
+    from lwasolarutl.visualization import slow_pipeline_default_plot
 
-    plot_path = mfs_i.with_name(f"{mfs_i.stem}.default_plot.png")
     fig, _ = slow_pipeline_default_plot(str(mfs_i))
     fig.savefig(plot_path, dpi=config.plot_dpi)
     plt.close(fig)
-    print(f"[plot] mfs_I default plot={plot_path}")
+    print(f"[plot] mfs_I plot={plot_path}")
     return plot_path
+
+
+def plot_mfs_i_default(config: PipelineConfig, combined: Mapping[str, Path]) -> Path | None:
+    mfs_i = combined.get("mfs_I")
+    if mfs_i is None:
+        print("[plot] skip mfs_I: combined FITS not found")
+        return None
+    return plot_mfs_i_fits(config, mfs_i, mfs_i.with_name(f"{mfs_i.stem}.default_plot.png"))
+
+
+def plot_mfs_i_refraction_default(config: PipelineConfig, combined: Mapping[str, Path]) -> Path | None:
+    mfs_i = combined.get("mfs_I_refraction")
+    if mfs_i is None:
+        print("[plot] skip mfs_I refraction: corrected FITS not found")
+        return None
+    return plot_mfs_i_fits(config, mfs_i, mfs_i.with_name(f"{mfs_i.stem}.default_plot.png"))
 
 
 def plot_mfs_v_default(config: PipelineConfig, combined: Mapping[str, Path]) -> Path | None:
@@ -1156,10 +1171,7 @@ def plot_mfs_v_default(config: PipelineConfig, combined: Mapping[str, Path]) -> 
     matplotlib.use("Agg", force=True)
     import matplotlib.pyplot as plt  # type: ignore
 
-    try:
-        from .visualization import slow_pipeline_default_polarization_plot
-    except ImportError:  # pragma: no cover - supports direct script execution.
-        from visualization import slow_pipeline_default_polarization_plot  # type: ignore
+    from lwasolarutl.visualization import slow_pipeline_default_polarization_plot
 
     plot_path = mfs_v.with_name("combined_mfs_V.default_plot.png")
     fig, _ = slow_pipeline_default_polarization_plot(str(mfs_i), str(mfs_v))
@@ -1167,6 +1179,50 @@ def plot_mfs_v_default(config: PipelineConfig, combined: Mapping[str, Path]) -> 
     plt.close(fig)
     print(f"[plot] mfs_V default plot={plot_path}")
     return plot_path
+
+
+def refraction_output_path(src: Path) -> Path:
+    return src.with_name(f"{src.stem}.lev1.5{src.suffix}")
+
+
+def refraction_correct_fits(src: Path, *, label: str) -> Path | None:
+    from lwasolarutl import refraction_corr
+
+    out = refraction_output_path(src)
+    out.unlink(missing_ok=True)
+    try:
+        px, py = refraction_corr.refraction_fit_param(str(src), overbright=2.5e6)
+        coeffs = np.asarray([*px, *py], dtype=float)
+        if not np.all(np.isfinite(coeffs)):
+            print(f"[refraction] skip {label}: fit returned non-finite coefficients px={px} py={py}")
+            return None
+        result = refraction_corr.apply_refra_coeff(str(src), px, py, fname_out=str(out), verbose=False)
+    except Exception as exc:
+        print(f"[refraction] skip {label}: {exc}")
+        out.unlink(missing_ok=True)
+        return None
+    if not result or not out.exists():
+        print(f"[refraction] skip {label}: corrected FITS was not produced")
+        out.unlink(missing_ok=True)
+        return None
+    print(f"[refraction] {label}: corrected={out}")
+    return out
+
+
+def refraction_correct_i_products(config: PipelineConfig, combined: Mapping[str, Path]) -> dict[str, Path]:
+    if config.dry_run:
+        print("[refraction] skip: dry-run")
+        return {}
+    corrected: dict[str, Path] = {}
+    for source_key, output_key in (("mfs_I", "mfs_I_refraction"), ("fch_I", "fch_I_refraction")):
+        src = combined.get(source_key)
+        if src is None:
+            print(f"[refraction] skip {source_key}: combined FITS not found")
+            continue
+        out = refraction_correct_fits(src, label=source_key)
+        if out is not None:
+            corrected[output_key] = out
+    return corrected
 
 
 def write_combined_summary(output_dir: Path, combined: Mapping[str, Path]) -> Path:
@@ -1307,7 +1363,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--min-freq", type=int, default=23)
     parser.add_argument("--max-freq", type=int, default=82)
     parser.add_argument("--jobs", type=int, default=1)
-    parser.add_argument("--threads", type=int, default=20)
+    parser.add_argument("--threads", type=int, default=16)
     parser.add_argument("--dp3-bin", default=DEFAULT_DP3_BIN)
     parser.add_argument("--aoflagger-strategy", type=Path, default=DEFAULT_AOFLAGGER_STRATEGY)
     parser.add_argument("--avg-chanbin", type=int, default=4)
@@ -1420,7 +1476,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--niter", type=int, default=10000)
     parser.add_argument("--weight", nargs=2, default=["briggs", "-0.5"])
     parser.add_argument("--horizon-mask", default="5deg")
-    parser.add_argument("--wsclean-mem-percent", type=int, default=5)
+    parser.add_argument("--wsclean-mem-percent", type=int, default=6)
     parser.add_argument("--mgain", type=float, default=0.8)
     parser.add_argument("--auto-mask", type=float, default=None)
     parser.add_argument("--auto-threshold", type=float, default=3.0)
@@ -1447,6 +1503,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--postprocess-usebeam", default="Memo178Beam")
     parser.add_argument("--no-postprocess-beam-correction", action="store_true")
     parser.add_argument("--no-postprocess-kelvin", action="store_true")
+    parser.add_argument(
+        "--do-refraction",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Fit and apply lwasolarutl refraction correction to combined Stokes I products, producing level 1.5 FITS.",
+    )
     parser.add_argument("--no-plot-mfs-i", action="store_true", help="Skip default visualization for combined_mfs_I.fits.")
     parser.add_argument("--plot-dpi", type=int, default=150)
     parser.add_argument("--multiscale", action="store_true", default=False)
@@ -1504,6 +1566,7 @@ def config_from_args(args: argparse.Namespace) -> PipelineConfig:
         postprocess_usebeam=args.postprocess_usebeam,
         postprocess_beam_correction=not args.no_postprocess_beam_correction,
         postprocess_to_kelvin=not args.no_postprocess_kelvin,
+        do_refraction=args.do_refraction,
         plot_mfs_i=not args.no_plot_mfs_i,
         plot_dpi=args.plot_dpi,
         wsclean=WSCleanOptions(

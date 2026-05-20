@@ -1,6 +1,6 @@
 # lwasolarproc
 
-`lwasolarproc` contains OVRO-LWA solar preprocessing, WSClean imaging, FITS/HDF5 utilities, and visualization helpers.
+`lwasolarproc` contains OVRO-LWA solar preprocessing, WSClean imaging, and realtime orchestration. Shared FITS wrapping, refraction-correction helpers, and quicklook visualization live in `lwasolarutl` from `lwa-solar-util`.
 
 This repository uses a standard package layout:
 
@@ -13,9 +13,10 @@ lwasolarproc/
     coords.py
     source_list.py
     preprocessing_and_imaging.py
-    visualization.py
     wsclean_helper.py
 ```
+
+Visualization and NDFITS helpers are imported directly from `lwasolarutl`.
 
 The package is intended to be installed from this directory:
 
@@ -24,6 +25,9 @@ cd /fast/rtpipe/lwasolarproc
 source /fast/rtpipe/use_lwa.sh
 uv pip install --python /fast/rtpipe/env/lwa/bin/python -e . --no-build-isolation
 ```
+
+`pyproject.toml` declares `lwasolarutl` and, for the operational `/fast/rtpipe`
+checkout, points `uv` at the sibling source tree `../lwa-solar-util`.
 
 If the environment does not already have build tooling, install it first:
 
@@ -41,7 +45,7 @@ source /fast/rtpipe/use_lwa.sh
 
 That script activates `/fast/rtpipe/env/lwa`, configures cache directories, and sets a writable SunPy working directory so `sunpy.map` does not try to write under the home directory.
 
-The visualization module uses `sunpy.map` directly. The environment needs SunPy's map extras, including `reproject` and `mpl-animators`.
+The visualization code is provided by `lwasolarutl.visualization` and uses `sunpy.map` directly. The environment needs SunPy's map extras, including `reproject` and `mpl-animators`.
 
 ## Command Line
 
@@ -63,7 +67,8 @@ The command wraps the full-band workflow:
 8. average by 4 channels again
 9. image MFS Stokes I/V and fine-channel Stokes I, with optional fine-channel V, using WSClean
 10. convert J2000 FITS products to helioprojective coordinates with beam/K correction
-11. combine FITS products and write the default MFS Stokes I and MFS V quicklook plots
+11. optionally apply `lwasolarutl` refraction correction to combined Stokes `I` products
+12. combine FITS products and write the default MFS Stokes I and MFS V quicklook plots
 
 ## Pipeline Workflow
 
@@ -113,9 +118,11 @@ lwasolarproc-fullband \
 
 Use `--no-bright-source-removal` to run the older path without source-list subtraction.
 
-Current default final solar WSClean imaging settings use `-quiet`, `-j 20`, `-mem 5`, `-size 384 384`, `-scale 1.8arcmin`, `-weight briggs -0.5`, `-minuv-l 10`, `-auto-threshold 3`, `-niter 10000`, `-mgain 0.8`, `-beam-fitting-size 2`, `-no-reorder`, `-no-update-model-required`, and `-no-dirty`.
+Current default final solar WSClean imaging settings use `-quiet`, `-j 16`, `-mem 6`, `-size 384 384`, `-scale 1.8arcmin`, `-weight briggs -0.5`, `-minuv-l 10`, `-auto-threshold 3`, `-niter 10000`, `-mgain 0.8`, `-beam-fitting-size 2`, `-no-reorder`, `-no-update-model-required`, and `-no-dirty`.
 
 Fine-channel imaging defaults to Stokes `I`. Use `--fch-pols I,V` to generate fine-channel Stokes `V` products in the same WSClean pass. Realtime mode accepts the same option and publishes optional FCH `V` FITS/HDF products when `combined_fch_V.fits` is produced.
+
+Use `--do-refraction` to fit and apply `lwasolarutl.refraction_corr` to combined Stokes `I` products after helioprojective conversion. The pipeline uses `overbright=2.5e6` for this fit so frames with bright sources are skipped instead of forcing a refraction solution. This produces level 1.5 `mfs_I` and `fch_I` FITS products when the fit succeeds; Stokes `V` is not refraction-corrected.
 
 The 2026-04-19 bright-source fullband benchmark at `/fast/rtpipe/tests/_lwasolarproc_fullband_bright_source_20260419` completed `13/13` bands in `66.97 s` wall time. The per-band average was `56.81 s`, including `21.76 s` for bright source removal, and produced combined MFS I, MFS V, and fine-channel I FITS files plus the default MFS I and MFS V plots.
 
@@ -142,7 +149,7 @@ The manager has three operating modes:
 
 In structured modes, the manager watches paths like `/lustre/pipeline/slow/55MHz/YYYY-MM-DD/HH/` through the `55MHz` trigger band. In flat event mode, it looks directly in the provided data directory. Inputs may be either unpacked `YYYYMMDD_HHMMSS_BAND.ms` directories or `YYYYMMDD_HHMMSS_BAND.ms.tar` archives. Each worker copies all available bands at job start; for `.ms.tar` inputs it first copies the archive into the worker scratch directory, then untars it there before running the fullband pipeline. Workers publish FITS/HDF/PNG products under dated `proc_out/{fits,hdf,fig}/slow/lev1/YYYY/MM/DD/` trees by default, write logs under `proc_out/log`, and remove per-job temporary work under `proc_tmp/worker_i/YYYYMMDD_HHMMSS` by default. Use `--ingest-lustre` for the operational publication layout under `/lustre/solarpipe/realtime_pipeline`.
 
-Queue admission also applies a solar-elevation gate at OVRO. By default `--el-valid 12` means a timestamp is queued only when the solar elevation is at least `12 deg`. This prevents the realtime pipeline from wasting work on low-elevation frames that tend to produce empty or poor-quality solar images.
+Queue admission also applies a solar-elevation gate at OVRO. By default `--el-valid 13.5` means a timestamp is queued only when the solar elevation is at least `13.5 deg`. This prevents the realtime pipeline from wasting work on low-elevation frames that tend to produce empty or poor-quality solar images.
 
 `--cadence-s` is a minimum enqueue spacing in every mode. The manager discovers timestamps from actual `.ms` or `.ms.tar` filenames, then skips a ready timestamp if it is closer than `--cadence-s` seconds to the last timestamp that was actually queued. This handles raw data that is nominally `10 s` cadence but sometimes lands at `9 s` or `11 s`, without generating synthetic missing timestamps.
 
@@ -150,6 +157,7 @@ By default the realtime figure outputs include both:
 
 - `proc_out/fig/slow/lev1/YYYY/MM/DD/ovro-lwa-352.lev1_mfs_10s.YYYY-MM-DDTHHMMSSZ.image_I.png`
 - `proc_out/fig/slow/lev1/YYYY/MM/DD/ovro-lwa-352.lev1_mfs_10s.YYYY-MM-DDTHHMMSSZ.image_V.png`
+- `proc_out/fig/slow/synop/YYYY/MM/DD/ovro-lwa-352.synop_mfs_10s.YYYY-MM-DDTHHMMSSZ.image_I.png`
 
 Realtime FITS/HDF products are published as:
 
@@ -180,11 +188,11 @@ Current realtime defaults:
 - queue length: `workers + 3` (`7` for the default `4` workers)
 - dispatch threshold: `3`
 - dispatch stagger: `15 s`
-- solar elevation gate: `12 deg`
+- solar elevation gate: `13.5 deg`
 - ready threshold: `7` visible bands
 - scan interval: `5 s`
 - pipeline jobs: `13`
-- WSClean threads: `20`
+- WSClean threads: `16`
 - fine-channel polarizations: `I` by default, or `I,V` with `--fch-pols I,V`
 - worker temporary cleanup: enabled by default with `--worker-rm-tmp`
 
@@ -203,7 +211,7 @@ lwasolarproc-realtime \
   --queue-length 26 \
   --dispatch-min-queue 3 \
   --dispatch-stagger-s 15 \
-  --el-valid 12 \
+  --el-valid 13.5 \
   --scan-lookback-hours 6 \
   --start-timestamp 20260420_162000 \
   --once
@@ -233,9 +241,16 @@ systemctl --user enable --now lwasunproc
 systemctl --user status lwasunproc
 ```
 
-The `lwasunproc` user service runs realtime mode with `--ingest-lustre --el-valid 12 --workers 7 --scan-interval 13 --fch-pols I --threads 20`, so it queues
-only timestamps where the Sun is at least `12 deg` above the OVRO horizon. It writes manager logs to
-`/lustre/solarpipe/realtime_pipeline/log/realtime_task_manage.log`.
+The `lwasunproc` user service runs realtime mode with `--ingest-lustre --el-valid 13.5 --workers 8 --scan-interval 12 --fch-pols I --threads 16 --do-refraction --no-logging`, so it queues
+only timestamps where the Sun is at least `13.5 deg` above the OVRO horizon. `--no-logging` disables the manager log file and per-worker stdout/stderr logs to reduce realtime IO; small per-task summary files are still published.
+
+When realtime mode is run with `--do-refraction`, successful Stokes `I` refraction products are published as level 1.5. For example:
+
+```text
+/lustre/solarpipe/realtime_pipeline/fits/slow/lev15/2026/05/18/ovro-lwa-352.lev1.5_fch_10s.2026-05-18T171038Z.image_I.fits
+```
+
+The matching HDF product is written under `hdf/slow/lev15/...`. If refraction correction succeeds for MFS `I`, the synoptic PNG is generated from the level 1.5 plot. If it fails, the existing level 1 plot is copied there instead. Local runs write this copy under `fig/slow/synop/...`; Lustre ingest writes it under `figs_mfs/slow/synop/...`.
 
 Common service operations:
 
@@ -306,6 +321,7 @@ Realtime worker logs:
 - manager log: `proc_out/log/realtime_task_manage.log`
 - per-worker logs: `proc_out/log/YYYYMMDD_HHMMSS.worker_i.log`
 - worker subprocess stdout/stderr is redirected into the per-worker logs so the manager stream stays concise
+- use `--no-logging` to disable manager and per-worker log files in realtime operation; worker subprocess stdout/stderr is redirected to `/dev/null`
 - `--worker-rm-tmp` is enabled by default and removes a worker's per-job scratch directory before the worker is returned to the idle pool; use `--no-worker-rm-tmp` only when debugging a failed job directory
 
 ### Live Tests
@@ -627,7 +643,7 @@ Visualization:
 ```python
 import matplotlib
 matplotlib.use("Agg")
-from lwasolarproc.visualization import slow_pipeline_default_plot
+from lwasolarutl.visualization import slow_pipeline_default_plot
 
 fig, axes = slow_pipeline_default_plot("image_I.fits", add_logo=False)
 fig.savefig("image_I.quicklook.png", dpi=150, bbox_inches="tight")
@@ -638,7 +654,7 @@ Polarization quicklook:
 ```python
 import matplotlib
 matplotlib.use("Agg")
-from lwasolarproc.visualization import slow_pipeline_default_polarization_plot
+from lwasolarutl.visualization import slow_pipeline_default_polarization_plot
 
 fig, axes = slow_pipeline_default_polarization_plot(
     "combined_mfs_I.fits",
