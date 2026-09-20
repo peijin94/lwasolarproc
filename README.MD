@@ -241,8 +241,8 @@ systemctl --user enable --now lwasunproc
 systemctl --user status lwasunproc
 ```
 
-The `lwasunproc` user service runs realtime mode with `--ingest-lustre --el-valid 13.5 --workers 8 --scan-interval 12 --fch-pols I --threads 16 --do-refraction --no-logging`, so it queues
-only timestamps where the Sun is at least `13.5 deg` above the OVRO horizon. `--no-logging` disables the manager log file and per-worker stdout/stderr logs to reduce realtime IO; small per-task summary files are still published.
+The `lwasunproc` user service runs realtime mode with `--ingest-lustre --log-dir /fast/tmp/rt_log --el-valid 13.5 --workers 8 --scan-interval 12 --fch-pols I --threads 16 --do-refraction --no-logging`, so it queues
+only timestamps where the Sun is at least `13.5 deg` above the OVRO horizon. `--log-dir /fast/tmp/rt_log` keeps log and summary artifacts off the Lustre ingest tree. `--no-logging` disables the manager log file and per-worker stdout/stderr logs to reduce realtime IO; small per-task summary files are still published under `/fast/tmp/rt_log`.
 
 When realtime mode is run with `--do-refraction`, successful Stokes `I` refraction products are published as level 1.5. For example:
 
@@ -320,6 +320,7 @@ Realtime worker logs:
 
 - manager log: `proc_out/log/realtime_task_manage.log`
 - per-worker logs: `proc_out/log/YYYYMMDD_HHMMSS.worker_i.log`
+- use `--log-dir PATH` to route manager logs, worker logs, and per-task summary TSVs outside the product output root
 - worker subprocess stdout/stderr is redirected into the per-worker logs so the manager stream stays concise
 - use `--no-logging` to disable manager and per-worker log files in realtime operation; worker subprocess stdout/stderr is redirected to `/dev/null`
 - `--worker-rm-tmp` is enabled by default and removes a worker's per-job scratch directory before the worker is returned to the idle pool; use `--no-worker-rm-tmp` only when debugging a failed job directory

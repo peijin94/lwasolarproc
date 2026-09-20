@@ -67,6 +67,7 @@ class WorkerConfig:
     source_layout: str
     proc_tmp: Path
     proc_out: Path
+    log_dir: Path
     ingest_lustre: bool
     caltable_dir: Path
     bands: tuple[str, ...]
@@ -354,11 +355,11 @@ def atomic_compress_fits(src: Path, dst: Path) -> Path:
     return dst
 
 
-def ensure_output_dirs(proc_out: Path, *, ingest_lustre: bool = False) -> dict[str, Path]:
+def ensure_output_dirs(proc_out: Path, *, ingest_lustre: bool = False, log_dir: Path | None = None) -> dict[str, Path]:
     dirs = {
         "fits": proc_out / "fits",
         "hdf": proc_out / "hdf",
-        "log": proc_out / "log",
+        "log": log_dir if log_dir is not None else proc_out / "log",
     }
     if ingest_lustre:
         dirs[LUSTRE_MFS_I_FIG_DIR] = proc_out / LUSTRE_MFS_I_FIG_DIR
@@ -587,6 +588,7 @@ def publish_outputs(
     timestamp: str,
     *,
     ingest_lustre: bool = False,
+    log_dir: Path | None = None,
 ) -> tuple[str, ...]:
     combined_dir = task_dir / "run" / "combined"
     run_dir = task_dir / "run"
@@ -632,18 +634,19 @@ def publish_outputs(
     published.append(atomic_copy(synop_source, outputs["mfs_i_synop_png"]))
     published.append(atomic_copy(source_products["mfs_v_png"], outputs["mfs_v_png"]))
     summary_path = run_dir / "preprocessing_and_imaging_summary.tsv"
+    published_log_dir = log_dir if log_dir is not None else proc_out / "log"
     if summary_path.exists():
-        published.append(atomic_copy(summary_path, proc_out / "log" / f"{timestamp}.summary.tsv"))
+        published.append(atomic_copy(summary_path, published_log_dir / f"{timestamp}.summary.tsv"))
     combined_summary = combined_dir / "combined_products.tsv"
     if combined_summary.exists():
-        published.append(atomic_copy(combined_summary, proc_out / "log" / f"{timestamp}.combined_products.tsv"))
+        published.append(atomic_copy(combined_summary, published_log_dir / f"{timestamp}.combined_products.tsv"))
     return tuple(str(path) for path in published)
 
 
 def run_worker_task(timestamp: str, config: WorkerConfig) -> WorkerResult:
     start = time.perf_counter()
     task_dir = config.proc_tmp / f"worker_{config.worker_id}" / timestamp
-    log_dir = config.proc_out / "log"
+    log_dir = config.log_dir
     log_dir.mkdir(parents=True, exist_ok=True)
     task_log = log_dir / f"{timestamp}.worker_{config.worker_id}.log"
     copied_bands: tuple[str, ...] = ()
@@ -702,6 +705,7 @@ def run_worker_task(timestamp: str, config: WorkerConfig) -> WorkerResult:
                     config.proc_out,
                     timestamp,
                     ingest_lustre=config.ingest_lustre,
+                    log_dir=config.log_dir,
                 )
 
         if config.worker_rm_tmp:
@@ -737,6 +741,7 @@ class RealtimeManager:
         self.source_layout = "flat" if self.mode == "event" else "structured"
         self.proc_tmp = args.proc_tmp.expanduser().resolve()
         self.proc_out = args.proc_out.expanduser().resolve()
+        self.log_dir = args.log_dir.expanduser().resolve()
         self.ingest_lustre = args.ingest_lustre
         self.caltable_dir = args.caltable_dir.expanduser().resolve()
         self.bands = parse_bands(args.bands)
@@ -792,7 +797,7 @@ class RealtimeManager:
         self.last_enqueued_timestamp: str | None = None
         self.last_dispatch_monotonic: float | None = None
 
-        self.output_dirs = ensure_output_dirs(self.proc_out, ingest_lustre=self.ingest_lustre)
+        self.output_dirs = ensure_output_dirs(self.proc_out, ingest_lustre=self.ingest_lustre, log_dir=self.log_dir)
         for worker_id in range(self.workers):
             (self.proc_tmp / f"worker_{worker_id}").mkdir(parents=True, exist_ok=True)
         if self.mode in {"backlog", "event"}:
@@ -963,6 +968,7 @@ class RealtimeManager:
                 source_layout=self.source_layout,
                 proc_tmp=self.proc_tmp,
                 proc_out=self.proc_out,
+                log_dir=self.log_dir,
                 ingest_lustre=self.ingest_lustre,
                 caltable_dir=self.caltable_dir,
                 bands=self.bands,
@@ -1073,11 +1079,10 @@ class RealtimeManager:
         logging.info("Task manager stopped; done=%d failed=%d", len(self.done), len(self.failed))
         return 1 if self.failed else 0
 
-def setup_logging(proc_out: Path, *, enabled: bool = True) -> None:
+def setup_logging(log_dir: Path, *, enabled: bool = True) -> None:
     if not enabled:
         logging.basicConfig(handlers=[logging.NullHandler()], force=True)
         return
-    log_dir = proc_out / "log"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / "realtime_task_manage.log"
     logging.Formatter.converter = time.gmtime
@@ -1108,6 +1113,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--slow-root", "--data-root", "--data-dir", dest="slow_root", type=Path, default=Path("/lustre/pipeline/slow"))
     parser.add_argument("--proc-tmp", type=Path, default=Path("./proc_tmp"))
     parser.add_argument("--proc-out", type=Path, default=Path("./proc_out"))
+    parser.add_argument(
+        "--log-dir",
+        type=Path,
+        help="Directory for manager logs, worker logs, and per-task summary TSVs. Defaults to --proc-out/log after ingest-root handling.",
+    )
     parser.add_argument(
         "--ingest-lustre",
         "--ingest_lustre",
@@ -1172,6 +1182,8 @@ def validate_args(args: argparse.Namespace) -> None:
     args.mode = normalize_mode(args.mode)
     if args.ingest_lustre:
         args.proc_out = args.lustre_ingest_root
+    if args.log_dir is None:
+        args.log_dir = args.proc_out / "log"
     if args.mode not in {"realtime", "backlog", "event"}:
         raise ValueError(f"Invalid mode: {args.mode}")
     if args.workers < 1:
@@ -1214,7 +1226,7 @@ def validate_args(args: argparse.Namespace) -> None:
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     validate_args(args)
-    setup_logging(args.proc_out.expanduser().resolve(), enabled=args.logging)
+    setup_logging(args.log_dir.expanduser().resolve(), enabled=args.logging)
     manager = RealtimeManager(args)
     return manager.run()
 

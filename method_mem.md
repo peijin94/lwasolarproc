@@ -587,7 +587,9 @@ Per-worker logs:
 
 - `proc_out/log/YYYYMMDD_HHMMSS.worker_i.log`
 
-Realtime service mode uses `--no-logging` to reduce operational IO. With this flag, the manager file logger is disabled and worker subprocess stdout/stderr is redirected to `/dev/null`; per-task summary and combined-product TSV files are still published.
+Use `--log-dir PATH` to route manager logs, worker logs, and per-task summary TSVs outside the product output root. The operational realtime service uses `/fast/tmp/rt_log` so log and summary artifacts do not write to `/lustre/solarpipe/realtime_pipeline/log`.
+
+Realtime service mode uses `--no-logging` to reduce operational IO. With this flag, the manager file logger is disabled and worker subprocess stdout/stderr is redirected to `/dev/null`; per-task summary and combined-product TSV files are still published under `--log-dir`.
 
 Per-task published summaries:
 
