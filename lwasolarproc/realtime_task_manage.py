@@ -20,7 +20,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Mapping, Sequence
 
-from .preprocessing_and_imaging import PipelineConfig, collect_caltables, process_fullband
+from .preprocessing_and_imaging import PipelineConfig, collect_caltables, match_caltables_by_freq, process_fullband
+from .qa_store import code_version, init_db, measure_band_qa, measure_flagged_fraction, record_run
 from .util import compress_fits_to_h5, filter_ovro_timestamps_by_solar_elevation
 
 
@@ -90,6 +91,8 @@ class WorkerResult:
     copied_bands: tuple[str, ...]
     output_paths: tuple[str, ...]
     work_dir: str
+    qa_rows: tuple = ()
+    qa_bands: tuple = ()
     error: str = ""
 
 
@@ -708,6 +711,59 @@ def run_worker_task(timestamp: str, config: WorkerConfig) -> WorkerResult:
                     log_dir=config.log_dir,
                 )
 
+                # A-Team QA (issue #2): worker-side measurement only; the
+                # manager process is the sole DB writer. Never fail the task.
+                qa_rows: list[dict] = []
+                qa_bands: list[dict] = []
+                try:
+                    from astropy.time import Time as _Time
+
+                    try:
+                        qa_mjd: float | None = float(
+                            _Time(parse_timestamp(timestamp)).mjd)
+                    except Exception:
+                        qa_mjd = None
+                    try:
+                        qa_cals = {int(f): str(p) for f, p in
+                                   match_caltables_by_freq(caltables).items()}
+                    except Exception:
+                        qa_cals = {}
+                    for band_result in results:
+                        if band_result.status != "ok":
+                            continue
+                        try:
+                            src_list = band_result.products.get(
+                                "bright_source_source_list")
+                            if src_list is None:
+                                continue
+                            for qa_row in measure_band_qa(
+                                    src_list, band_result.freq_mhz, qa_mjd):
+                                qa_row["caltable"] = qa_cals.get(
+                                    band_result.freq_mhz)
+                                qa_rows.append(qa_row)
+                        except Exception:
+                            logging.warning("QA measure failed: %s %sMHz",
+                                            timestamp, band_result.freq_mhz,
+                                            exc_info=True)
+                        try:
+                            ms_path = (
+                                band_result.products.get("work_ms")
+                                or band_result.products.get(
+                                    "averaged_before_selfcal_ms"))
+                            if ms_path is not None:
+                                qa_band = measure_flagged_fraction(ms_path)
+                                qa_band["freq_mhz"] = band_result.freq_mhz
+                                qa_bands.append(qa_band)
+                        except Exception:
+                            logging.warning("QA flag measure failed: %s %sMHz",
+                                            timestamp, band_result.freq_mhz,
+                                            exc_info=True)
+                except Exception:
+                    logging.warning("QA setup failed for %s", timestamp,
+                                    exc_info=True)
+                    qa_rows = []
+                    qa_bands = []
+
         if config.worker_rm_tmp:
             shutil.rmtree(task_dir)
         return WorkerResult(
@@ -718,6 +774,8 @@ def run_worker_task(timestamp: str, config: WorkerConfig) -> WorkerResult:
             copied_bands=copied_bands,
             output_paths=output_paths,
             work_dir=str(task_dir),
+            qa_rows=tuple(qa_rows),
+            qa_bands=tuple(qa_bands),
         )
     except Exception as exc:
         if (config.worker_rm_tmp or config.cleanup_failed) and task_dir.exists():
@@ -741,6 +799,8 @@ class RealtimeManager:
         self.source_layout = "flat" if self.mode == "event" else "structured"
         self.proc_tmp = args.proc_tmp.expanduser().resolve()
         self.proc_out = args.proc_out.expanduser().resolve()
+        self.qa_db = args.qa_db.expanduser().resolve() if args.qa_db else None
+        self._qa_conn = None  # lazy-opened in the manager process only
         self.log_dir = args.log_dir.expanduser().resolve()
         self.ingest_lustre = args.ingest_lustre
         self.caltable_dir = args.caltable_dir.expanduser().resolve()
@@ -988,6 +1048,24 @@ class RealtimeManager:
             if multiple_idle and self.dispatch_stagger_s > 0:
                 break
 
+    def record_qa(self, result: WorkerResult) -> None:
+        """Write worker-measured A-Team QA rows (manager process only)."""
+        if self.qa_db is None or (not result.qa_rows and not result.qa_bands):
+            return
+        try:
+            if self._qa_conn is None:
+                self.qa_db.parent.mkdir(parents=True, exist_ok=True)
+                self._qa_conn = init_db(self.qa_db)
+            run_id = record_run(self._qa_conn, result.timestamp,
+                                result.qa_rows,
+                                code_version=code_version(),
+                                band_rows=result.qa_bands)
+            logging.info("QA recorded %s: run_id=%d rows=%d bands=%d db=%s",
+                         result.timestamp, run_id, len(result.qa_rows),
+                         len(result.qa_bands), self.qa_db)
+        except Exception:
+            logging.exception("QA record failed for %s", result.timestamp)
+
     def handle_finished(
         self,
         futures: dict[Future[WorkerResult], tuple[int, str]],
@@ -1020,6 +1098,7 @@ class RealtimeManager:
                 )
                 for output_path in result.output_paths:
                     logging.info("Published %s", output_path)
+                self.record_qa(result)
             else:
                 self.failed.add(result.timestamp)
                 logging.error(
@@ -1113,6 +1192,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--slow-root", "--data-root", "--data-dir", dest="slow_root", type=Path, default=Path("/lustre/pipeline/slow"))
     parser.add_argument("--proc-tmp", type=Path, default=Path("./proc_tmp"))
     parser.add_argument("--proc-out", type=Path, default=Path("./proc_out"))
+    parser.add_argument(
+        "--qa-db", type=Path, default=None,
+        help="SQLite A-Team QA database path (issue #2). The manager is the"
+             " sole writer. Keep on LOCAL disk, never Lustre/NFS. Unset disables QA recording.",
+    )
     parser.add_argument(
         "--log-dir",
         type=Path,

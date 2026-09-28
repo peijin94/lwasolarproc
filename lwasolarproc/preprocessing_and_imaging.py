@@ -27,7 +27,7 @@ import time
 from collections.abc import Iterable as IterableABC
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
@@ -1483,6 +1483,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--minuv-l", type=float, default=10.0)
     parser.add_argument("--beam-fitting-size", type=int, default=2)
     parser.add_argument("--mfs-pols", default="I,V", help="Comma-separated polarizations for the MFS WSClean pass.")
+    parser.add_argument(
+        "--qa-db", type=Path, default=None,
+        help="SQLite A-Team QA database path (issue #2). Records per-band"
+             " Cas A / Cyg A flux QA after processing. Keep on LOCAL disk,"
+             " never Lustre/NFS. Unset disables QA recording.",
+    )
     parser.add_argument("--no-fine-channel", action="store_true", help="Skip the fine-channel WSClean pass.")
     parser.add_argument("--fch-pols", default="I", help="Comma-separated polarizations for the fine-channel WSClean pass, for example I or I,V.")
     parser.add_argument("--fch-channels-out", type=int, default=12, help="WSClean channels-out for the fine-channel pass.")
@@ -1610,7 +1616,68 @@ def main(argv: Sequence[str] | None = None) -> int:
         max_freq=args.max_freq,
     )
     failures = [result for result in results if result.status != "ok"]
+    if args.qa_db is not None:
+        record_fullband_qa(args, results)
     return 1 if failures else 0
+
+
+def record_fullband_qa(args: argparse.Namespace,
+                       results: Sequence[BandResult]) -> None:
+    """Measure per-band A-Team QA and record to SQLite (issue #2)."""
+    from .qa_store import (code_version, init_db, measure_band_qa,
+                           measure_flagged_fraction, record_run)
+
+    try:
+        ms_names = sorted(Path(args.ms_dir).expanduser().resolve().glob("*.ms"))
+        match = re.search(r"(\d{8}_\d{6})", ms_names[0].name) if ms_names else None
+        timestamp = match.group(1) if match else datetime.now(
+            timezone.utc).strftime("%Y%m%d_%H%M%S")
+    except Exception:
+        timestamp = "unknown"
+    try:
+        from astropy.time import Time as _Time
+
+        mjd: float | None = float(_Time(datetime.strptime(
+            timestamp, "%Y%m%d_%H%M%S").replace(
+            tzinfo=timezone.utc)).mjd)
+    except Exception:
+        mjd = None
+    rows: list[dict] = []
+    band_rows: list[dict] = []
+    for result in results:
+        if result.status != "ok":
+            continue
+        src_list = result.products.get("bright_source_source_list")
+        if src_list is None:
+            continue
+        try:
+            rows.extend(measure_band_qa(src_list, result.freq_mhz, mjd))
+        except Exception as exc:
+            print(f"[qa] measure failed {result.freq_mhz}MHz: {exc}")
+        try:
+            ms_path = (result.products.get("work_ms")
+                       or result.products.get("averaged_before_selfcal_ms"))
+            if ms_path is not None:
+                qa_band = measure_flagged_fraction(ms_path)
+                qa_band["freq_mhz"] = result.freq_mhz
+                band_rows.append(qa_band)
+        except Exception as exc:
+            print(f"[qa] flag measure failed {result.freq_mhz}MHz: {exc}")
+    if not rows and not band_rows:
+        print("[qa] nothing measured; skipping record")
+        return
+    try:
+        db_path = Path(args.qa_db).expanduser().resolve()
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = init_db(db_path)
+        run_id = record_run(conn, timestamp, rows,
+                            code_version=code_version(),
+                            band_rows=band_rows)
+        conn.close()
+        print(f"[qa] recorded run_id={run_id} rows={len(rows)}"
+              f" bands={len(band_rows)} db={db_path}")
+    except Exception as exc:
+        print(f"[qa] record failed: {exc}")
 
 
 if __name__ == "__main__":
