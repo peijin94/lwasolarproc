@@ -80,6 +80,7 @@ class WorkerConfig:
     logging: bool
     cleanup_failed: bool
     worker_rm_tmp: bool
+    min_ok_bands: int | None = None
 
 
 @dataclass(frozen=True)
@@ -699,9 +700,21 @@ def run_worker_task(timestamp: str, config: WorkerConfig) -> WorkerResult:
                     max_freq=None,
                 )
                 failures = [result for result in results if result.status != "ok"]
-                if failures:
+                ok_count = len(results) - len(failures)
+                min_ok = config.min_ok_bands if config.min_ok_bands is not None else len(results)
+                if ok_count < min_ok:
                     detail = "; ".join(f"{result.freq_mhz}MHz: {result.error}" for result in failures)
-                    raise RuntimeError(f"Fullband pipeline failures: {detail}")
+                    raise RuntimeError(
+                        f"Fullband pipeline failures ({ok_count}/{len(results)} bands ok, "
+                        f"need {min_ok}): {detail}"
+                    )
+                if failures:
+                    logging.warning(
+                        "Proceeding with %d/%d bands ok; failed bands: %s",
+                        ok_count,
+                        len(results),
+                        ", ".join(f"{result.freq_mhz}MHz" for result in failures),
+                    )
 
                 output_paths = publish_outputs(
                     task_dir,
@@ -807,6 +820,7 @@ class RealtimeManager:
         self.bands = parse_bands(args.bands)
         self.trigger_band = args.trigger_band
         self.ready_min_bands = args.ready_min_bands
+        self.min_ok_bands = args.min_ok_bands
         self.queue_length = args.queue_length
         self.dispatch_min_queue = args.dispatch_min_queue
         self.dispatch_stagger_s = args.dispatch_stagger_s
@@ -1040,6 +1054,7 @@ class RealtimeManager:
                 logging=self.logging,
                 cleanup_failed=self.cleanup_failed,
                 worker_rm_tmp=self.worker_rm_tmp,
+                min_ok_bands=self.min_ok_bands,
             )
             future = executor.submit(run_worker_task, task.timestamp, worker_config)
             futures[future] = (worker_id, task.timestamp)
@@ -1230,6 +1245,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--el-valid", type=float, default=13.5, help="Queue only when Sun elevation at OVRO is at least this many degrees.")
     parser.add_argument("--ready-min-bands", type=int, default=7)
+    parser.add_argument(
+        "--min-ok-bands",
+        type=int,
+        default=None,
+        help="Minimum number of per-band pipeline successes required to publish a "
+        "timestamp (failed bands are then simply missing from the combined "
+        "products). Defaults to all bands (strict; preserves previous behavior).",
+    )
     parser.add_argument("--scan-interval", type=float, default=5.0)
     parser.add_argument("--scan-lookback-hours", type=int, default=1)
     parser.add_argument("--start-timestamp", help="Only consider timestamps at or after YYYYMMDD_HHMMSS.")
@@ -1301,6 +1324,11 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--trigger-band must be included in --bands for realtime/backlog modes")
     if args.ready_min_bands > len(bands):
         raise ValueError("--ready-min-bands cannot exceed the number of configured bands")
+    if args.min_ok_bands is not None:
+        if args.min_ok_bands < 1:
+            raise ValueError("--min-ok-bands must be at least 1")
+        if args.min_ok_bands > len(bands):
+            raise ValueError("--min-ok-bands cannot exceed the number of configured bands")
     if not args.slow_root.exists():
         raise FileNotFoundError(f"Slow-data root does not exist: {args.slow_root}")
     if not args.caltable_dir.exists():
