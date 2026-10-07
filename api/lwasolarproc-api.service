@@ -1,0 +1,14 @@
+[Unit]
+Description=OVRO-LWA realtime QA and fine-channel image API
+
+[Service]
+Type=simple
+WorkingDirectory=/fast/rtpipe/lwasolarproc
+Environment=PYTHONUNBUFFERED=1
+Environment=LWASOLARPROC_RUNTIME_DIR=/fast/rtpipe/env/lwa/runtime
+ExecStart=/bin/bash -lc 'source /fast/rtpipe/use_lwa.sh >/dev/null && exec /fast/rtpipe/env/lwa/bin/python -m lwasolarproc.api_service --host 127.0.0.1 --port 8080 --qa-db /fast/rtpipe/qa/qa.db --image-db /fast/rtpipe/qa/images.db'
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

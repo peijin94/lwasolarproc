@@ -81,6 +81,7 @@ class WorkerConfig:
     cleanup_failed: bool
     worker_rm_tmp: bool
     min_ok_bands: int | None = None
+    image_cache_db: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -716,6 +717,15 @@ def run_worker_task(timestamp: str, config: WorkerConfig) -> WorkerResult:
                         ", ".join(f"{result.freq_mhz}MHz" for result in failures),
                     )
 
+                if config.image_cache_db is not None:
+                    try:
+                        from .api_store import cache_fch_images
+
+                        cache_fch_images(config.image_cache_db, timestamp,
+                                         run_dir / "combined" / "helio" / "fch_I")
+                    except Exception:
+                        logging.exception("API image cache failed for %s", timestamp)
+
                 output_paths = publish_outputs(
                     task_dir,
                     config.proc_out,
@@ -747,13 +757,12 @@ def run_worker_task(timestamp: str, config: WorkerConfig) -> WorkerResult:
                         try:
                             src_list = band_result.products.get(
                                 "bright_source_source_list")
-                            if src_list is None:
-                                continue
-                            for qa_row in measure_band_qa(
-                                    src_list, band_result.freq_mhz, qa_mjd):
-                                qa_row["caltable"] = qa_cals.get(
-                                    band_result.freq_mhz)
-                                qa_rows.append(qa_row)
+                            if src_list is not None:
+                                for qa_row in measure_band_qa(
+                                        src_list, band_result.freq_mhz, qa_mjd):
+                                    qa_row["caltable"] = qa_cals.get(
+                                        band_result.freq_mhz)
+                                    qa_rows.append(qa_row)
                         except Exception:
                             logging.warning("QA measure failed: %s %sMHz",
                                             timestamp, band_result.freq_mhz,
@@ -813,6 +822,7 @@ class RealtimeManager:
         self.proc_tmp = args.proc_tmp.expanduser().resolve()
         self.proc_out = args.proc_out.expanduser().resolve()
         self.qa_db = args.qa_db.expanduser().resolve() if args.qa_db else None
+        self.image_cache_db = args.image_cache_db.expanduser().resolve() if args.image_cache_db else None
         self._qa_conn = None  # lazy-opened in the manager process only
         self.log_dir = args.log_dir.expanduser().resolve()
         self.ingest_lustre = args.ingest_lustre
@@ -1055,6 +1065,7 @@ class RealtimeManager:
                 cleanup_failed=self.cleanup_failed,
                 worker_rm_tmp=self.worker_rm_tmp,
                 min_ok_bands=self.min_ok_bands,
+                image_cache_db=self.image_cache_db,
             )
             future = executor.submit(run_worker_task, task.timestamp, worker_config)
             futures[future] = (worker_id, task.timestamp)
@@ -1211,6 +1222,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--qa-db", type=Path, default=None,
         help="SQLite A-Team QA database path (issue #2). The manager is the"
              " sole writer. Keep on LOCAL disk, never Lustre/NFS. Unset disables QA recording.",
+    )
+    parser.add_argument(
+        "--image-cache-db", type=Path, default=None,
+        help="Local SQLite cache for the API's 30/45/60/75 MHz fine-channel I images. "
+             "Workers expire observations older than 10 minutes on each write. Unset disables caching.",
     )
     parser.add_argument(
         "--log-dir",

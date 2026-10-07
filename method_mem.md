@@ -754,3 +754,29 @@ The current package has reached the point where it can:
 - drive a bounded realtime replay or service-style queue manager from the slow-data tree
 
 The current technical risk is no longer package shape or missing features. It is operational performance: particularly input copy pressure from Lustre and the remaining uninstrumented overhead outside the band-level timers.
+
+## Realtime QA And Array API (2026-10-07)
+
+- `lwasolarproc.api_service` serves read-only `/flagging`, `/flux`, `/images`,
+  `/images/{30,45,60,75}.npz`, and corresponding FITS downloads. Deployment
+  instructions and the user service are in `api/`.
+- The QA database remains `/fast/rtpipe/qa/qa.db`, with the manager as its sole
+  writer. `qa_band.ant_list` is JSON containing zero-based MS antenna indices;
+  the count remains `n_bad_ant`. Older rows have a null list. The existing
+  strict definition requires every sample on every participating baseline to
+  be flagged; antennas absent from the MS baselines are excluded.
+- Worker image caching is enabled by `--image-cache-db /fast/rtpipe/qa/images.db`.
+  It stores the nearest level-1 helioprojective Stokes-I fine channels to
+  30/45/60/75 MHz, including actual frequency, NPZ array bytes, and FITS bytes,
+  before publication and scratch cleanup. No additional PB correction occurs.
+- Cache retention is ten minutes of observation UTC. Every worker write purges
+  expired rows; queries also exclude expired data. Late or backlog completions
+  already outside that window are not inserted. A local lock serializes WAL
+  initialization and writes; the API does not write either database.
+- Timestamp requests use `YYYYMMDDTHHMMSS` in UTC; the internal underscore
+  format is accepted too. `newest` or an omitted timestamp selects latest
+  observation time. Historical lookups choose nearest, preferring newer on
+  equal distance. Timestamp selection is independent of completion order.
+- `tests/test_api.py` covers schema migration, antenna indices, nearest/latest
+  queries, NPZ/FITS contents, expiry, concurrent process writes, HTTP responses,
+  and worker caching before scratch cleanup.

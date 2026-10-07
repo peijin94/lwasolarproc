@@ -10,6 +10,10 @@ Schema:
   qa_runs    (id, timestamp, created_utc, code_version, caltable, n_bands)
   qa_sources (id, run_id, freq_mhz, source, measured_jy, expected_jy,
               ratio, n_components, beam, leakage_iv)
+  qa_band    (id, run_id, freq_mhz, flagged_frac, n_vis_total,
+              n_vis_flagged, n_bad_ant, ant_list)
+``ant_list`` is JSON text containing zero-based MS antenna indices; NULL
+means the list was not recorded, while [] means no fully flagged antennas.
 ``leakage_iv`` stays NULL in the standard path (no full-sky V image); it is
 recorded when V data are available.
 """
@@ -17,6 +21,7 @@ recorded when V data are available.
 from __future__ import annotations
 
 import datetime
+import json
 import sqlite3
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -38,6 +43,7 @@ CREATE TABLE IF NOT EXISTS qa_runs (
     caltable TEXT,
     n_bands INTEGER
 );
+CREATE INDEX IF NOT EXISTS idx_qa_runs_timestamp ON qa_runs (timestamp);
 CREATE TABLE IF NOT EXISTS qa_sources (
     id INTEGER PRIMARY KEY,
     run_id INTEGER NOT NULL REFERENCES qa_runs(id),
@@ -62,6 +68,7 @@ CREATE TABLE IF NOT EXISTS qa_band (
     n_vis_total INTEGER,
     n_vis_flagged INTEGER,
     n_bad_ant INTEGER,
+    ant_list TEXT,
     UNIQUE(run_id, freq_mhz)
 );
 """
@@ -193,7 +200,7 @@ def measure_band_qa(source_list_path: str | Path, freq_mhz: int,
 
 
 def measure_flagged_fraction(ms_path: str | Path) -> dict[str, Any]:
-    """Flagged (row, channel, pol) sample fraction + strict bad-antenna count.
+    """Flagged sample fraction and fully flagged MS antenna indices.
 
     An antenna is bad iff *every* sample on *every* baseline it participates
     in is flagged. Needs python-casacore (worker/full-env only; imported
@@ -213,11 +220,11 @@ def measure_flagged_fraction(ms_path: str | Path) -> dict[str, Any]:
                                minlength=n_ant)
     flagged_per_ant = np.bincount(np.concatenate(
         [ant1[row_all_flagged], ant2[row_all_flagged]]), minlength=n_ant)
-    n_bad_ant = int(np.count_nonzero(
-        (rows_per_ant > 0) & (flagged_per_ant == rows_per_ant)))
+    ant_list = np.flatnonzero(
+        (rows_per_ant > 0) & (flagged_per_ant == rows_per_ant)).tolist()
     return {"n_vis_total": total, "n_vis_flagged": flagged,
             "flagged_frac": (flagged / total) if total else None,
-            "n_bad_ant": n_bad_ant}
+            "n_bad_ant": len(ant_list), "ant_list": ant_list}
 
 
 def init_db(path: str | Path) -> sqlite3.Connection:
@@ -230,6 +237,8 @@ def init_db(path: str | Path) -> sqlite3.Connection:
                 conn.execute("PRAGMA table_info(qa_band)").fetchall()}
     if "n_bad_ant" not in existing:
         conn.execute("ALTER TABLE qa_band ADD COLUMN n_bad_ant INTEGER;")
+    if "ant_list" not in existing:
+        conn.execute("ALTER TABLE qa_band ADD COLUMN ant_list TEXT;")
     conn.commit()
     return conn
 
@@ -280,11 +289,13 @@ def record_run(conn: sqlite3.Connection, timestamp: str,
     if band_rows:
         conn.executemany(
             "INSERT OR REPLACE INTO qa_band (run_id, freq_mhz, flagged_frac,"
-            " n_vis_total, n_vis_flagged, n_bad_ant)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
+            " n_vis_total, n_vis_flagged, n_bad_ant, ant_list)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
             [(run_id, b["freq_mhz"], b.get("flagged_frac"),
               b.get("n_vis_total"), b.get("n_vis_flagged"),
-              b.get("n_bad_ant")) for b in band_rows],
+              b.get("n_bad_ant"),
+              json.dumps(b["ant_list"]) if b.get("ant_list") is not None else None)
+             for b in band_rows],
         )
     conn.commit()
     return run_id
@@ -318,7 +329,7 @@ def recent_bands(conn: sqlite3.Connection,
                  limit: int = 50) -> list[dict[str, Any]]:
     """Latest per-band flagging rows, optionally filtered. Newest first."""
     query = ("SELECT q.timestamp, b.freq_mhz, b.flagged_frac,"
-             " b.n_vis_total, b.n_vis_flagged, b.n_bad_ant"
+             " b.n_vis_total, b.n_vis_flagged, b.n_bad_ant, b.ant_list"
              " FROM qa_band b JOIN qa_runs q ON b.run_id = q.id")
     params: list[Any] = []
     if freq_mhz is not None:
@@ -327,8 +338,12 @@ def recent_bands(conn: sqlite3.Connection,
     query += " ORDER BY q.timestamp DESC, b.freq_mhz LIMIT ?"
     params.append(limit)
     cols = ("timestamp", "freq_mhz", "flagged_frac", "n_vis_total",
-            "n_vis_flagged", "n_bad_ant")
-    return [dict(zip(cols, row)) for row in conn.execute(query, params)]
+            "n_vis_flagged", "n_bad_ant", "ant_list")
+    rows = [dict(zip(cols, row)) for row in conn.execute(query, params)]
+    for row in rows:
+        if row["ant_list"] is not None:
+            row["ant_list"] = json.loads(row["ant_list"])
+    return rows
 
 
 def code_version() -> str:

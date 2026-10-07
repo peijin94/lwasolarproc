@@ -623,6 +623,20 @@ Manager per-frame wall statistics:
 
 This run fixed the earlier empty-image replay problem by adding the OVRO solar-elevation queue gate. The replay now starts from a scientifically valid local-Sun elevation instead of blindly queueing low-elevation timestamps from the trigger band.
 
+## Realtime HTTP API
+
+The small HTTP service in [`api/`](api/README.md) serves per-band flagging,
+A-Team flux QA, and cached fine-channel Stokes-I arrays near 30/45/60/75 MHz.
+Use `timestamp=YYYYMMDDTHHMMSS` for the nearest observation, or `newest`/no
+timestamp for the latest. Workers enable the ten-minute local SQLite image
+cache with `--image-cache-db /fast/rtpipe/qa/images.db`; QA uses the existing
+`--qa-db /fast/rtpipe/qa/qa.db`. Image downloads are compressed NPZ or FITS.
+
+Flagging now records both `n_bad_ant` and `ant_list`, a JSON list of zero-based
+MS antenna indices. Opening the QA database with the current writer adds the
+column; older rows retain a null list. See the API README for endpoints,
+array metadata, and a user-systemd service that requires no sudo.
+
 ## Python API
 
 FITS/HDF5 round trip:
