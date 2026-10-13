@@ -18,6 +18,8 @@ This module ports the active test full-band workflow into package code:
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import os
 import re
 import shutil
@@ -35,10 +37,12 @@ import numpy as np
 
 try:
     from .resources import aoflagger_strategy_path
+    from .solution_quality import validate_phase_solution, validate_quality_thresholds
     from .source_list import distance_to_src_list, get_sun_ra_dec, get_time_mjd, mask_far_sun_sources
     from .wsclean_helper import WSCleanOptions, expected_image_fits, expected_image_fits_paths, run_wsclean
 except ImportError:  # pragma: no cover - supports direct script execution.
     from resources import aoflagger_strategy_path
+    from solution_quality import validate_phase_solution, validate_quality_thresholds
     from source_list import distance_to_src_list, get_sun_ra_dec, get_time_mjd, mask_far_sun_sources
     from wsclean_helper import WSCleanOptions, expected_image_fits, expected_image_fits_paths, run_wsclean
 
@@ -59,6 +63,7 @@ class BandTarget:
     src_ms: Path
     caltable: Path
     work_dir: Path
+    fallback_solution: Path | None = None
 
 
 @dataclass
@@ -87,6 +92,9 @@ class PipelineConfig:
     copy_ms: bool = True
     run_phase_selfcal: bool = True
     selfcal_solint: int = 0
+    selfcal_min_finite_fraction: float = 0.5
+    selfcal_max_phase_std_rad: float = 0.6
+    selfcal_fallback_dir: Path | None = None
     selfcal_caltype: str = "diagonalphase"
     selfcal_uvlambdamin: float = 30.0
     selfcal_maxiter: int = 500
@@ -128,6 +136,9 @@ class PipelineConfig:
     plot_mfs_v: bool = True
     plot_dpi: int = 150
     wsclean: WSCleanOptions = field(default_factory=WSCleanOptions)
+
+    def __post_init__(self) -> None:
+        validate_quality_thresholds(self.selfcal_min_finite_fraction, self.selfcal_max_phase_std_rad)
 
 
 def shlex_join(cmd: Sequence[object]) -> str:
@@ -251,6 +262,8 @@ def build_targets(
     ms_paths: Iterable[Path],
     caltables_by_freq: Mapping[int, Path],
     work_dir: str | Path,
+    *,
+    selfcal_fallbacks: Mapping[int, Path] | None = None,
 ) -> list[BandTarget]:
     targets: list[BandTarget] = []
     base_work_dir = Path(work_dir).expanduser().resolve()
@@ -264,6 +277,7 @@ def build_targets(
                 src_ms=ms_path.resolve(),
                 caltable=caltables_by_freq[freq].resolve(),
                 work_dir=base_work_dir / f"{freq:02d}MHz",
+                fallback_solution=(selfcal_fallbacks or {}).get(freq),
             )
         )
     return targets
@@ -369,6 +383,7 @@ def build_dp3_gaincal_command(
         "msout=.",
         "steps=[gaincal]",
         "gaincal.type=gaincal",
+        "gaincal.applysolution=false",
         f"gaincal.solint={config.selfcal_solint}",
         f"gaincal.caltype={config.selfcal_caltype}",
         f"gaincal.uvlambdamin={config.selfcal_uvlambdamin}",
@@ -399,6 +414,7 @@ def build_dp3_phase_applycal_command(
         "msout.datacolumn=DATA",
         "steps=[applycal]",
         "applycal.type=applycal",
+        "applycal.solset=sol000",
         f"applycal.parmdb={solution_path}",
         "applycal.steps=[phase]",
         "applycal.phase.correction=phase000",
@@ -483,7 +499,7 @@ def phase_selfcal_wsclean_options(config: PipelineConfig) -> WSCleanOptions:
         intervals_out=1,
         no_reorder=config.wsclean.no_reorder,
         no_dirty=config.wsclean.no_dirty,
-        no_update_model_required=config.wsclean.no_update_model_required,
+        no_update_model_required=False,  # DP3 gaincal consumes the final MODEL_DATA.
         no_negative=True,
         quiet=config.wsclean.quiet,
         auto_pix_fov=config.model_auto_pix_fov,
@@ -494,50 +510,195 @@ def phase_selfcal_wsclean_options(config: PipelineConfig) -> WSCleanOptions:
     )
 
 
+def phase_selfcal_active_antennas(input_ms: Path, chunk_rows: int = 512) -> list[str]:
+    """Require solves for antennas with usable cross-correlation input, not dead stations."""
+    from casacore.tables import table  # type: ignore
+
+    active: set[int] = set()
+    with table(str(input_ms), readonly=True, ack=False) as tb:
+        columns = set(tb.colnames())
+        for start in range(0, tb.nrows(), chunk_rows):
+            count = min(chunk_rows, tb.nrows() - start)
+            read = lambda col: np.asarray(tb.getcol(col, startrow=start, nrow=count))
+            first, second = read("ANTENNA1"), read("ANTENNA2")
+            valid = ~read("FLAG") & np.isfinite(read("DATA"))
+            if "WEIGHT_SPECTRUM" in columns:
+                weights = read("WEIGHT_SPECTRUM")
+                valid &= np.isfinite(weights) & (weights > 0)
+            elif "WEIGHT" in columns:
+                weights = read("WEIGHT")[:, None, :]
+                valid &= np.isfinite(weights) & (weights > 0)
+            rows = np.any(valid, axis=(1, 2)) & (first != second)
+            if "FLAG_ROW" in columns:
+                rows &= ~read("FLAG_ROW")
+            active.update(int(value) for value in first[rows])
+            active.update(int(value) for value in second[rows])
+    with table(str(input_ms / "ANTENNA"), readonly=True, ack=False) as tb:
+        names = list(tb.getcol("NAME"))
+    return sorted(str(names[index]) for index in active)
+
+
+def phase_selfcal_policy(
+    config: PipelineConfig, fallback_solution: Path | None = None,
+) -> dict[str, object]:
+    """Bind cached admission to the model, solve and quality settings in use."""
+    model_options = vars(phase_selfcal_wsclean_options(config)).copy()
+    # Execution/logging knobs do not alter the scientific solve policy.
+    for key in ("threads", "mem_percent", "quiet"):
+        model_options.pop(key)
+    policy = {
+        "version": 1,
+        "solve_enabled": config.run_phase_selfcal,
+        "gaincal_command": build_dp3_gaincal_command(config, Path("<input>"), Path("<solution>")),
+        "model_options": model_options,
+        "min_finite_fraction": config.selfcal_min_finite_fraction,
+        "max_phase_std_rad": config.selfcal_max_phase_std_rad,
+    }
+    fallback = None
+    if fallback_solution is not None:
+        try:
+            digest = hashlib.sha256(fallback_solution.read_bytes()).hexdigest()
+        except OSError:
+            digest = None  # Validation records an unavailable/invalid stable table.
+        fallback = {"path": str(fallback_solution.resolve()), "sha256": digest}
+    policy["fallback"] = fallback
+    # Canonical JSON representation makes tuple/list settings round-trip safely.
+    return json.loads(json.dumps(policy, allow_nan=False))
+
+
 def run_phase_selfcal(
     input_ms: Path,
     config: PipelineConfig,
     timings: dict[str, float],
-) -> tuple[Path, dict[str, Path]]:
-    output_ms = phase_selfcal_ms_path(input_ms)
-    if output_ms.exists():
-        if config.reuse_workdir:
-            print(f"[reuse] {output_ms}")
-            return output_ms, {"phase_selfcal_ms": output_ms}
-        raise FileExistsError(f"Phase-selfcal MS already exists: {output_ms}")
+    *,
+    fallback_solution: Path | None = None,
+) -> tuple[Path, dict[str, object]]:
+    """Admit residual phase solutions before applying them to calibrated DATA.
 
+    On rejection, use an admitted stable residual phase table if provided;
+    otherwise retain the upstream transferred calibration (return input_ms).
+    Never apply the original bandpass a second time to this already calibrated MS.
+    """
+    output_ms = phase_selfcal_ms_path(input_ms)
     solution_path = phase_selfcal_solution_path(input_ms)
+    report_path = solution_path.with_suffix(".quality.json")
+    thresholds = dict(min_finite_fraction=config.selfcal_min_finite_fraction,
+                      max_phase_std_rad=config.selfcal_max_phase_std_rad)
+    required_antennas = None if config.dry_run else phase_selfcal_active_antennas(input_ms)
+    thresholds["required_antennas"] = required_antennas
+    policy = phase_selfcal_policy(config, fallback_solution)
+    policy["required_antennas"] = required_antennas
+    if output_ms.exists():
+        if not config.reuse_workdir:
+            raise FileExistsError(f"Phase-selfcal MS already exists: {output_ms}")
+        # Old or partially applied MSs must not bypass admission via --reuse-workdir.
+        try:
+            receipt = json.loads(report_path.read_text())
+            selected = Path(receipt["selected_solution"])
+            accepted, _ = validate_phase_solution(selected, **thresholds)
+            digest = hashlib.sha256(selected.read_bytes()).hexdigest()
+            if (not accepted or not receipt["apply_succeeded"] or digest != receipt["solution_sha256"]
+                    or receipt["policy"] != policy):
+                raise ValueError("missing or invalid admission proof")
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise ValueError(f"Cannot reuse {output_ms}: quality proof failed; remove the cached selfcal MS and rerun") from exc
+        print(f"[reuse] quality-admitted {output_ms}")
+        return output_ms, {
+            "phase_selfcal_ms": output_ms, "phase_selfcal_solution": selected,
+            "phase_selfcal_candidate": solution_path, "phase_selfcal_quality_report": report_path,
+            "phase_selfcal_status": receipt["status"],
+        }
+
     model_prefix = input_ms.parent / f"{input_ms.stem}_phase_selfcal_model"
     print(f"[phase-selfcal] {input_ms.name} -> {output_ms.name}")
-    start = time.perf_counter()
-    if not config.dry_run:
-        clear_model_data_column(input_ms)
-
     options = phase_selfcal_wsclean_options(config)
-    result = run_wsclean(input_ms, model_prefix, options, dry_run=config.dry_run)
+    start = time.perf_counter()
+    preparation_error = None
+    if not config.dry_run and config.run_phase_selfcal:
+        try:
+            clear_model_data_column(input_ms)
+            solution_path.unlink(missing_ok=True)  # A no-output solve cannot admit a stale table.
+        except (OSError, RuntimeError) as exc:
+            # casacore represents permission failures as RuntimeError. Do not
+            # hide unrelated runtime/coding errors or a corrupt input table.
+            if isinstance(exc, RuntimeError) and not any(
+                text in str(exc).lower() for text in ("permission denied", "read-only", "read only")
+            ):
+                raise
+            preparation_error = exc
+
+    if config.run_phase_selfcal:
+        if config.dry_run:
+            result = run_wsclean(input_ms, model_prefix, options, dry_run=True,
+                                 extra_env=casarc_env(config))
+            print(f"[dry-run] {shlex_join(result)}")
+            run_command(build_dp3_gaincal_command(config, input_ms, solution_path), dry_run=True)
     if config.dry_run:
-        print(f"[dry-run] {shlex_join(result)}")
+        print("[dry-run] conditional: validate candidate, then apply only if admitted; otherwise use stable/transferred fallback")
+        dry_solution = solution_path if config.run_phase_selfcal else fallback_solution
+        if dry_solution is not None:
+            run_command(build_dp3_phase_applycal_command(config, input_ms, output_ms, dry_solution), dry_run=True)
+        timings["phase_selfcal_s"] = time.perf_counter() - start
+        return output_ms, {"phase_selfcal_status": "dry_run"}
 
-    run_command(
-        build_dp3_gaincal_command(config, input_ms, solution_path),
-        dry_run=config.dry_run,
-        extra_env=casarc_env(config),
-    )
-    run_command(
-        build_dp3_phase_applycal_command(config, input_ms, output_ms, solution_path),
-        dry_run=config.dry_run,
-        extra_env=casarc_env(config),
-    )
-    timings["phase_selfcal_s"] = time.perf_counter() - start
+    try:
+        if preparation_error is not None:
+            accepted = False
+            quality = {"path": str(solution_path), "passed": False,
+                       "reasons": [f"selfcal preparation failed: {preparation_error}"]}
+        elif config.run_phase_selfcal:
+            try:
+                run_wsclean(input_ms, model_prefix, options, dry_run=False,
+                            extra_env=casarc_env(config))
+            except (subprocess.CalledProcessError, OSError) as exc:
+                accepted = False
+                quality = {"path": str(solution_path), "passed": False,
+                           "reasons": [f"model generation failed: {exc}"]}
+            else:
+                try:
+                    run_command(build_dp3_gaincal_command(config, input_ms, solution_path),
+                                extra_env=casarc_env(config))
+                except (subprocess.CalledProcessError, OSError) as exc:
+                    accepted = False
+                    quality = {"path": str(solution_path), "passed": False, "reasons": [f"gaincal failed: {exc}"]}
+                else:
+                    accepted, quality = validate_phase_solution(solution_path, **thresholds)
+        else:
+            accepted = False
+            quality = {"path": str(solution_path), "passed": False, "reasons": ["snapshot solve disabled by policy"]}
 
-    if not config.dry_run and config.selfcal_cleanup_images:
-        cleanup_wsclean_products(model_prefix, keep_suffixes=set())
-
-    return output_ms, {
-        "phase_selfcal_ms": output_ms,
-        "phase_selfcal_solution": solution_path,
-        "phase_selfcal_model_prefix": model_prefix,
-    }
+        selected = solution_path if accepted else None
+        status = "accepted" if accepted else "fallback_transferred"
+        audit = {"candidate": quality, "apply_succeeded": False,
+                 "solve_enabled": config.run_phase_selfcal, "policy": policy}
+        if not accepted:
+            print(f"[phase-selfcal] rejected {solution_path.name}: {quality['reasons']}")
+            if fallback_solution is not None:
+                stable_ok, stable_quality = validate_phase_solution(fallback_solution, **thresholds)
+                audit["stable"] = stable_quality
+                if stable_ok:
+                    selected, status = fallback_solution, "fallback_stable"
+            print(f"[phase-selfcal] fallback={status.removeprefix('fallback_')} solution={selected or 'upstream calibration retained'}")
+        audit.update(status=status, selected_solution=str(selected) if selected else None)
+        report_path.write_text(json.dumps(audit, indent=2, allow_nan=False) + "\n")
+        if selected is not None:
+            audit["solution_sha256"] = hashlib.sha256(selected.read_bytes()).hexdigest()
+            run_command(build_dp3_phase_applycal_command(config, input_ms, output_ms, selected),
+                        extra_env=casarc_env(config))
+            audit["apply_succeeded"] = True
+            report_path.write_text(json.dumps(audit, indent=2, allow_nan=False) + "\n")
+        products = {
+            "phase_selfcal_status": status, "phase_selfcal_candidate": solution_path,
+            "phase_selfcal_quality_report": report_path, "phase_selfcal_quality": quality,
+            "phase_selfcal_solution": selected, "phase_selfcal_model_prefix": model_prefix,
+        }
+        if selected is not None:
+            products["phase_selfcal_ms"] = output_ms
+        return (output_ms if selected is not None else input_ms), products
+    finally:
+        timings["phase_selfcal_s"] = time.perf_counter() - start
+        if config.selfcal_cleanup_images:
+            cleanup_wsclean_products(model_prefix, keep_suffixes=set())
 
 
 def source_removal_ms_path(ms_path: Path) -> Path:
@@ -645,7 +806,8 @@ def run_bright_source_removal(
     if not config.dry_run:
         clear_model_data_column(input_ms)
     options = bright_source_wsclean_options(config)
-    result = run_wsclean(input_ms, output_prefix, options, dry_run=config.dry_run, save_source_list=True)
+    result = run_wsclean(input_ms, output_prefix, options, dry_run=config.dry_run,
+                        extra_env=casarc_env(config), save_source_list=True)
     if config.dry_run:
         print(f"[dry-run] {shlex_join(result)}")
         print(
@@ -777,7 +939,8 @@ def run_mfs_wsclean(
 ) -> dict[str, Path]:
     options = make_wsclean_options(config, pol=config.mfs_pols, channels_out=None)
     start = time.perf_counter()
-    result = run_wsclean(ms_path, output_prefix, options, dry_run=config.dry_run)
+    result = run_wsclean(ms_path, output_prefix, options, dry_run=config.dry_run,
+                        extra_env=casarc_env(config))
     if config.dry_run:
         print(f"[dry-run] {shlex_join(result)}")
     timings["wsclean_mfs_s"] = time.perf_counter() - start
@@ -830,7 +993,8 @@ def run_fine_channel_wsclean(
         extra_options=extra_options,
     )
     start = time.perf_counter()
-    result = run_wsclean(ms_path, output_prefix, options, dry_run=config.dry_run)
+    result = run_wsclean(ms_path, output_prefix, options, dry_run=config.dry_run,
+                        extra_env=casarc_env(config))
     if config.dry_run:
         print(f"[dry-run] {shlex_join(result)}")
     timings["wsclean_fch_i_s"] = time.perf_counter() - start
@@ -877,8 +1041,10 @@ def process_band(target: BandTarget, config: PipelineConfig) -> BandResult:
         products["averaged_before_selfcal_ms"] = pre_selfcal_ms
 
         calibrated_ms = pre_selfcal_ms
-        if config.run_phase_selfcal:
-            calibrated_ms, phase_selfcal_products = run_phase_selfcal(pre_selfcal_ms, config, timings)
+        if config.run_phase_selfcal or target.fallback_solution is not None:
+            products["phase_selfcal_quality_report"] = phase_selfcal_solution_path(pre_selfcal_ms).with_suffix(".quality.json")
+            calibrated_ms, phase_selfcal_products = run_phase_selfcal(
+                pre_selfcal_ms, config, timings, fallback_solution=target.fallback_solution)
             products.update(phase_selfcal_products)
 
         source_removed_ms = calibrated_ms
@@ -1248,7 +1414,15 @@ def process_fullband(
     cfg = config or PipelineConfig()
     ms_paths = discover_ms(ms_dir, pattern=ms_pattern, freqs=freqs, min_freq=min_freq, max_freq=max_freq)
     caltables_by_freq = match_caltables_by_freq([Path(path).expanduser().resolve() for path in caltables])
-    targets = build_targets(ms_paths, caltables_by_freq, cfg.work_dir)
+    fallbacks = {}
+    if cfg.selfcal_fallback_dir is not None:
+        fallback_dir = Path(cfg.selfcal_fallback_dir).expanduser().resolve()
+        if not fallback_dir.exists():
+            raise FileNotFoundError(f"Missing selfcal fallback directory: {fallback_dir}")
+        if not fallback_dir.is_dir():
+            raise NotADirectoryError(f"Selfcal fallback path is not a directory: {fallback_dir}")
+        fallbacks = match_caltables_by_freq(sorted(fallback_dir.glob("*.h5")))
+    targets = build_targets(ms_paths, caltables_by_freq, cfg.work_dir, selfcal_fallbacks=fallbacks)
 
     print("Selected full-band jobs:")
     for target in targets:
@@ -1295,6 +1469,9 @@ def write_summary(work_dir: Path, results: Sequence[BandResult]) -> Path:
         "work_dir",
         "phase_selfcal_ms",
         "phase_selfcal_solution",
+        "phase_selfcal_status",
+        "phase_selfcal_candidate",
+        "phase_selfcal_quality_report",
         "bright_source_removed_ms",
         "mfs_i_fits",
         "mfs_v_fits",
@@ -1324,6 +1501,9 @@ def write_summary(work_dir: Path, results: Sequence[BandResult]) -> Path:
             str(result.work_dir),
             _fmt_product(result.products.get("phase_selfcal_ms")),
             _fmt_product(result.products.get("phase_selfcal_solution")),
+            str(result.products.get("phase_selfcal_status", "")),
+            _fmt_product(result.products.get("phase_selfcal_candidate")),
+            _fmt_product(result.products.get("phase_selfcal_quality_report")),
             _fmt_product(result.products.get("bright_source_removed_ms")),
             _fmt_product(result.products.get("mfs_i_fits")),
             _fmt_product(result.products.get("mfs_v_fits")),
@@ -1348,6 +1528,15 @@ def _fmt_product(value: object) -> str:
     return ";".join(str(path) for path in _as_paths(value))
 
 
+def add_selfcal_quality_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--selfcal-min-finite-fraction", type=float, default=0.5,
+                        help="Require valid positive-weight fraction strictly above this for every antenna/pol.")
+    parser.add_argument("--selfcal-max-phase-std-rad", type=float, default=0.6,
+                        help="Require circular phase scatter across antennas strictly below this in every solution slot/pol.")
+    parser.add_argument("--selfcal-fallback-dir", type=Path,
+                        help="Optional stable RESIDUAL phase H5Parms, one per *MHz.h5 band; not the upstream bandpass directory.")
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run full-band LWA solar preprocessing through WSClean FITS products.",
@@ -1369,6 +1558,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--avg-chanbin", type=int, default=4)
     parser.add_argument("--observatory", default="OVRO")
     parser.add_argument("--no-phase-selfcal", action="store_true", help="Skip WSClean+DP3 phase selfcal after the first avg4ch step.")
+    add_selfcal_quality_arguments(parser)
     parser.add_argument("--selfcal-solint", type=int, default=0)
     parser.add_argument("--selfcal-caltype", default="diagonalphase")
     parser.add_argument("--selfcal-uvlambdamin", type=float, default=30.0)
@@ -1538,6 +1728,9 @@ def config_from_args(args: argparse.Namespace) -> PipelineConfig:
         dry_run=args.dry_run,
         run_phase_selfcal=not args.no_phase_selfcal,
         selfcal_solint=args.selfcal_solint,
+        selfcal_min_finite_fraction=args.selfcal_min_finite_fraction,
+        selfcal_max_phase_std_rad=args.selfcal_max_phase_std_rad,
+        selfcal_fallback_dir=args.selfcal_fallback_dir.expanduser().resolve() if args.selfcal_fallback_dir else None,
         selfcal_caltype=args.selfcal_caltype,
         selfcal_uvlambdamin=args.selfcal_uvlambdamin,
         selfcal_maxiter=args.selfcal_maxiter,
