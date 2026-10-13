@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import subprocess
 from dataclasses import dataclass, field as dataclass_field
 from pathlib import Path
@@ -220,6 +221,7 @@ def run_wsclean(
     dry_run: bool = False,
     cwd: str | Path | None = None,
     check: bool = True,
+    extra_env: Mapping[str, str] | None = None,
     **extra_options: object,
 ) -> subprocess.CompletedProcess[str] | list[str]:
     """
@@ -232,11 +234,15 @@ def run_wsclean(
     LOGGER.info("Running WSClean: %s", " ".join(cmd))
     if dry_run:
         return cmd
+    env = os.environ.copy()
+    if extra_env:
+        env.update(extra_env)
     return subprocess.run(
         cmd,
         cwd=str(cwd) if cwd else None,
         check=check,
         text=True,
+        env=env,
     )
 
 

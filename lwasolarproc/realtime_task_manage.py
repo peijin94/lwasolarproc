@@ -20,7 +20,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Mapping, Sequence
 
-from .preprocessing_and_imaging import PipelineConfig, collect_caltables, match_caltables_by_freq, process_fullband
+from .preprocessing_and_imaging import (PipelineConfig, add_selfcal_quality_arguments,
+                                        collect_caltables, match_caltables_by_freq, process_fullband)
+from .solution_quality import validate_quality_thresholds
 from .qa_store import code_version, init_db, measure_band_qa, measure_flagged_fraction, record_run
 from .util import compress_fits_to_h5, filter_ovro_timestamps_by_solar_elevation
 
@@ -82,6 +84,10 @@ class WorkerConfig:
     worker_rm_tmp: bool
     min_ok_bands: int | None = None
     image_cache_db: Path | None = None
+    run_phase_selfcal: bool = True
+    selfcal_min_finite_fraction: float = 0.5
+    selfcal_max_phase_std_rad: float = 0.6
+    selfcal_fallback_dir: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -655,6 +661,9 @@ def run_worker_task(timestamp: str, config: WorkerConfig) -> WorkerResult:
     log_dir.mkdir(parents=True, exist_ok=True)
     task_log = log_dir / f"{timestamp}.worker_{config.worker_id}.log"
     copied_bands: tuple[str, ...] = ()
+    results = []
+    quality_paths: list[str] = []
+    preservation_errors: list[str] = []
 
     try:
         if task_dir.exists():
@@ -690,103 +699,135 @@ def run_worker_task(timestamp: str, config: WorkerConfig) -> WorkerResult:
                     plot_mfs_i=True,
                     fch_pols=config.fch_pols,
                     do_refraction=config.do_refraction,
+                    run_phase_selfcal=config.run_phase_selfcal,
+                    selfcal_min_finite_fraction=config.selfcal_min_finite_fraction,
+                    selfcal_max_phase_std_rad=config.selfcal_max_phase_std_rad,
+                    selfcal_fallback_dir=config.selfcal_fallback_dir,
                 )
-                results = process_fullband(
-                    input_dir,
-                    caltables,
-                    pipeline_config,
-                    jobs=min(config.pipeline_jobs, len(copied_bands)),
-                    freqs=freqs,
-                    min_freq=None,
-                    max_freq=None,
-                )
-                failures = [result for result in results if result.status != "ok"]
-                ok_count = len(results) - len(failures)
-                min_ok = config.min_ok_bands if config.min_ok_bands is not None else len(results)
-                if ok_count < min_ok:
-                    detail = "; ".join(f"{result.freq_mhz}MHz: {result.error}" for result in failures)
-                    raise RuntimeError(
-                        f"Fullband pipeline failures ({ok_count}/{len(results)} bands ok, "
-                        f"need {min_ok}): {detail}"
-                    )
-                if failures:
-                    logging.warning(
-                        "Proceeding with %d/%d bands ok; failed bands: %s",
-                        ok_count,
-                        len(results),
-                        ", ".join(f"{result.freq_mhz}MHz" for result in failures),
-                    )
-
-                if config.image_cache_db is not None:
-                    try:
-                        from .api_store import cache_fch_images
-
-                        cache_fch_images(config.image_cache_db, timestamp,
-                                         run_dir / "combined" / "helio" / "fch_I")
-                    except Exception:
-                        logging.exception("API image cache failed for %s", timestamp)
-
-                output_paths = publish_outputs(
-                    task_dir,
-                    config.proc_out,
-                    timestamp,
-                    ingest_lustre=config.ingest_lustre,
-                    log_dir=config.log_dir,
-                )
-
-                # A-Team QA (issue #2): worker-side measurement only; the
-                # manager process is the sole DB writer. Never fail the task.
-                qa_rows: list[dict] = []
-                qa_bands: list[dict] = []
                 try:
-                    from astropy.time import Time as _Time
+                    results = process_fullband(
+                        input_dir,
+                        caltables,
+                        pipeline_config,
+                        jobs=min(config.pipeline_jobs, len(copied_bands)),
+                        freqs=freqs,
+                        min_freq=None,
+                        max_freq=None,
+                    )
+                    failures = [result for result in results if result.status != "ok"]
+                    ok_count = len(results) - len(failures)
+                    min_ok = config.min_ok_bands if config.min_ok_bands is not None else len(results)
+                    if ok_count < min_ok:
+                        detail = "; ".join(f"{result.freq_mhz}MHz: {result.error}" for result in failures)
+                        raise RuntimeError(
+                            f"Fullband pipeline failures ({ok_count}/{len(results)} bands ok, "
+                            f"need {min_ok}): {detail}"
+                        )
+                    if failures:
+                        logging.warning(
+                            "Proceeding with %d/%d bands ok; failed bands: %s",
+                            ok_count,
+                            len(results),
+                            ", ".join(f"{result.freq_mhz}MHz" for result in failures),
+                        )
 
+                    if config.image_cache_db is not None:
+                        try:
+                            from .api_store import cache_fch_images
+
+                            cache_fch_images(config.image_cache_db, timestamp,
+                                             run_dir / "combined" / "helio" / "fch_I")
+                        except Exception:
+                            logging.exception("API image cache failed for %s", timestamp)
+
+                    output_paths = publish_outputs(
+                        task_dir,
+                        config.proc_out,
+                        timestamp,
+                        ingest_lustre=config.ingest_lustre,
+                        log_dir=config.log_dir,
+                    )
+
+                    # A-Team QA (issue #2): worker-side measurement only; the
+                    # manager process is the sole DB writer. Never fail the task.
+                    qa_rows: list[dict] = []
+                    qa_bands: list[dict] = []
                     try:
-                        qa_mjd: float | None = float(
-                            _Time(parse_timestamp(timestamp)).mjd)
+                        from astropy.time import Time as _Time
+
+                        try:
+                            qa_mjd: float | None = float(
+                                _Time(parse_timestamp(timestamp)).mjd)
+                        except Exception:
+                            qa_mjd = None
+                        try:
+                            qa_cals = {int(f): str(p) for f, p in
+                                       match_caltables_by_freq(caltables).items()}
+                        except Exception:
+                            qa_cals = {}
+                        for band_result in results:
+                            if band_result.status != "ok":
+                                continue
+                            try:
+                                src_list = band_result.products.get(
+                                    "bright_source_source_list")
+                                if src_list is not None:
+                                    for qa_row in measure_band_qa(
+                                            src_list, band_result.freq_mhz, qa_mjd):
+                                        qa_row["caltable"] = qa_cals.get(
+                                            band_result.freq_mhz)
+                                        qa_rows.append(qa_row)
+                            except Exception:
+                                logging.warning("QA measure failed: %s %sMHz",
+                                                timestamp, band_result.freq_mhz,
+                                                exc_info=True)
+                            try:
+                                ms_path = (
+                                    band_result.products.get("work_ms")
+                                    or band_result.products.get(
+                                        "averaged_before_selfcal_ms"))
+                                if ms_path is not None:
+                                    qa_band = measure_flagged_fraction(ms_path)
+                                    qa_band["freq_mhz"] = band_result.freq_mhz
+                                    qa_bands.append(qa_band)
+                            except Exception:
+                                logging.warning("QA flag measure failed: %s %sMHz",
+                                                timestamp, band_result.freq_mhz,
+                                                exc_info=True)
                     except Exception:
-                        qa_mjd = None
-                    try:
-                        qa_cals = {int(f): str(p) for f, p in
-                                   match_caltables_by_freq(caltables).items()}
-                    except Exception:
-                        qa_cals = {}
+                        logging.warning("QA setup failed for %s", timestamp,
+                                        exc_info=True)
+                        qa_rows = []
+                        qa_bands = []
+                finally:
+                    # Known paths plus shallow band-directory globs cover exceptions
+                    # before process_fullband can return its BandResults.
+                    reports = {}
                     for band_result in results:
-                        if band_result.status != "ok":
+                        report = band_result.products.get("phase_selfcal_quality_report")
+                        if report is not None:
+                            reports[Path(report)] = band_result.freq_mhz
+                    for band in copied_bands:
+                        freq = int(band.removesuffix("MHz"))
+                        for report in (run_dir / f"{freq:02d}MHz").glob("*_phase_selfcal.quality.json"):
+                            reports[report] = freq
+                    # copy_ms=False leaves averaged MSs and their reports at input_dir.
+                    for report in input_dir.glob("*_phase_selfcal.quality.json"):
+                        matches = re.findall(r"(?<!\d)(\d+)MHz(?=_|\.)", report.name)
+                        if len(matches) == 1 and int(matches[0]) in freqs:
+                            reports[report] = int(matches[0])
+                    for report, freq in reports.items():
+                        if not report.is_file():
                             continue
                         try:
-                            src_list = band_result.products.get(
-                                "bright_source_source_list")
-                            if src_list is not None:
-                                for qa_row in measure_band_qa(
-                                        src_list, band_result.freq_mhz, qa_mjd):
-                                    qa_row["caltable"] = qa_cals.get(
-                                        band_result.freq_mhz)
-                                    qa_rows.append(qa_row)
-                        except Exception:
-                            logging.warning("QA measure failed: %s %sMHz",
-                                            timestamp, band_result.freq_mhz,
-                                            exc_info=True)
-                        try:
-                            ms_path = (
-                                band_result.products.get("work_ms")
-                                or band_result.products.get(
-                                    "averaged_before_selfcal_ms"))
-                            if ms_path is not None:
-                                qa_band = measure_flagged_fraction(ms_path)
-                                qa_band["freq_mhz"] = band_result.freq_mhz
-                                qa_bands.append(qa_band)
-                        except Exception:
-                            logging.warning("QA flag measure failed: %s %sMHz",
-                                            timestamp, band_result.freq_mhz,
-                                            exc_info=True)
-                except Exception:
-                    logging.warning("QA setup failed for %s", timestamp,
-                                    exc_info=True)
-                    qa_rows = []
-                    qa_bands = []
+                            saved = atomic_copy(report, log_dir / f"{timestamp}.{freq}MHz.selfcal-quality.json")
+                            quality_paths.append(str(saved))
+                        except Exception as exc:
+                            preservation_errors.append(f"Quality report preservation failed for {report}: {exc}")
+                    if preservation_errors and sys.exc_info()[0] is None:
+                        raise RuntimeError("; ".join(preservation_errors))
 
-        if config.worker_rm_tmp:
+        if config.worker_rm_tmp and not preservation_errors:
             shutil.rmtree(task_dir)
         return WorkerResult(
             timestamp=timestamp,
@@ -794,13 +835,13 @@ def run_worker_task(timestamp: str, config: WorkerConfig) -> WorkerResult:
             status="ok",
             elapsed_s=time.perf_counter() - start,
             copied_bands=copied_bands,
-            output_paths=output_paths,
+            output_paths=output_paths + tuple(quality_paths),
             work_dir=str(task_dir),
             qa_rows=tuple(qa_rows),
             qa_bands=tuple(qa_bands),
         )
     except Exception as exc:
-        if (config.worker_rm_tmp or config.cleanup_failed) and task_dir.exists():
+        if (config.worker_rm_tmp or config.cleanup_failed) and task_dir.exists() and not preservation_errors:
             shutil.rmtree(task_dir)
         return WorkerResult(
             timestamp=timestamp,
@@ -808,9 +849,9 @@ def run_worker_task(timestamp: str, config: WorkerConfig) -> WorkerResult:
             status="failed",
             elapsed_s=time.perf_counter() - start,
             copied_bands=copied_bands,
-            output_paths=(),
+            output_paths=tuple(quality_paths),
             work_dir=str(task_dir),
-            error=str(exc),
+            error="; ".join([str(exc), *preservation_errors]),
         )
 
 
@@ -845,6 +886,10 @@ class RealtimeManager:
         self.threads = args.threads
         self.fch_pols = args.fch_pols
         self.do_refraction = args.do_refraction
+        self.run_phase_selfcal = not args.no_phase_selfcal
+        self.selfcal_min_finite_fraction = args.selfcal_min_finite_fraction
+        self.selfcal_max_phase_std_rad = args.selfcal_max_phase_std_rad
+        self.selfcal_fallback_dir = args.selfcal_fallback_dir.expanduser().resolve() if args.selfcal_fallback_dir else None
         self.logging = args.logging
         self.cleanup_failed = args.cleanup_failed
         self.worker_rm_tmp = args.worker_rm_tmp
@@ -1066,6 +1111,10 @@ class RealtimeManager:
                 worker_rm_tmp=self.worker_rm_tmp,
                 min_ok_bands=self.min_ok_bands,
                 image_cache_db=self.image_cache_db,
+                run_phase_selfcal=self.run_phase_selfcal,
+                selfcal_min_finite_fraction=self.selfcal_min_finite_fraction,
+                selfcal_max_phase_std_rad=self.selfcal_max_phase_std_rad,
+                selfcal_fallback_dir=self.selfcal_fallback_dir,
             )
             future = executor.submit(run_worker_task, task.timestamp, worker_config)
             futures[future] = (worker_id, task.timestamp)
@@ -1276,6 +1325,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--cadence-s", type=float, default=10.0, help="Minimum allowed seconds between enqueued timestamps in all modes.")
     parser.add_argument("--pipeline-jobs", type=int, default=13)
     parser.add_argument("--threads", type=int, default=16)
+    add_selfcal_quality_arguments(parser)
+    parser.add_argument("--no-phase-selfcal", action="store_true",
+                        help="Disable snapshot selfcal (required for low-SNR buffer data); retain transferred calibration.")
     parser.add_argument("--fch-pols", default="I", help="Comma-separated polarizations for the fine-channel WSClean pass, for example I or I,V.")
     parser.add_argument(
         "--do-refraction",
@@ -1303,6 +1355,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def validate_args(args: argparse.Namespace) -> None:
     args.mode = normalize_mode(args.mode)
+    validate_quality_thresholds(args.selfcal_min_finite_fraction, args.selfcal_max_phase_std_rad)
     if args.ingest_lustre:
         args.proc_out = args.lustre_ingest_root
     if args.log_dir is None:

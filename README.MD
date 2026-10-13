@@ -92,7 +92,83 @@ lwasolarproc-fullband \
   --dry-run
 ```
 
-Phase selfcal is enabled by default. It runs a temporary full-sky WSClean model on the first averaged MS, solves a diagonal phase H5Parm with DP3 `gaincal`, and applies only the `phase000` solution before bright-source subtraction. Use `--no-phase-selfcal` to bypass this stage for control tests.
+Phase selfcal is enabled by default. It runs a temporary full-sky WSClean model on the first averaged MS, solves a diagonal phase H5Parm with DP3 `gaincal`, and applies only an admitted `phase000` solution before bright-source subtraction.
+
+### Selfcal admission and fallback
+
+Every new residual phase solve is checked before application:
+
+- Each input-supported antenna/polarization must have **strictly more than 50%** finite,
+  positive-weight samples. Zero, negative, non-finite weights and non-finite
+  phases are invalid; a global average cannot hide a bad antenna. Required
+  antennas are determined from finite, positive-weight, unflagged cross-correlations
+  in the input MS, independently of the candidate solve. Antennas already fully
+  unusable upstream are explicitly listed as ignored; newly failed or missing
+  solutions for required antennas still reject the solve.
+- Circular phase standard deviation across antennas must be **strictly below
+  0.6 rad** in **every** time/frequency/direction/polarization slot. Circular
+  scatter handles phase wraps and common phase offsets; slots are not pooled.
+- Every slot/polarization needs at least two valid antennas. All-zero slots
+  are rejected conservatively because identity solutions can also represent
+  a non-converged solve. Missing/malformed H5Parms are rejected too.
+
+A rejected or failed DP3 solve is never applied. The pipeline first tries a
+quality-admitted stable **residual phase** table from `--selfcal-fallback-dir`
+(one H5Parm per band, filenames ending in e.g. `78MHz.h5`). This can contain
+transferred slow selfcal phases or explicitly curated previous-good realtime
+solutions. Otherwise it continues with the already upstream-calibrated MS;
+**the original amplitude/phase bandpass is not applied twice**. Missing bands
+in the optional fallback directory use this upstream-calibration fallback.
+
+Fallback tables must be compatible with the upstream calibration, antenna
+names, frequency and observation window. The gate checks numerical quality,
+not this scientific provenance; operators supply compatible stable tables.
+It does not automatically cache previous-good solutions or select them by age.
+Do not point `--selfcal-fallback-dir` at `--caltable-dir`.
+
+Both CLI entry points accept `--selfcal-min-finite-fraction` and
+`--selfcal-max-phase-std-rad` to tune the gates. The default bounds are initial
+buffer-campaign heuristics, not proof of solver convergence; validate/tune on
+slow data before production rollout. Standalone validation without MS support
+context checks every antenna in the H5Parm conservatively.
+
+**Low-SNR buffer policy:** do not enable short-snapshot solving merely because
+it now has a gate. Use `--no-phase-selfcal` to disable solving. With an optional
+stable residual directory, admitted transferred phases are still applied,
+without invoking WSClean model generation or DP3 gaincal:
+
+```bash
+lwasolarproc-realtime --mode event --data-dir /path/to/buffer_ms \
+  --caltable-dir /path/to/bandpass_h5 \
+  --no-phase-selfcal --selfcal-fallback-dir /path/to/slow_residual_phases
+```
+
+Without a stable directory, `--no-phase-selfcal` retains only the upstream
+calibration, as before. New solve decisions, rejection reasons and metrics are
+written to `*_phase_selfcal.quality.json`; the summary TSV distinguishes
+`accepted`, `fallback_stable`, `fallback_transferred`, and `dry_run`, and keeps
+candidate vs actually applied solution paths separate. Workers preserve these
+JSON reports as `LOG_DIR/TIMESTAMP.BAND.selfcal-quality.json` even with
+`--no-logging` and temporary-directory cleanup. Cached selfcal MSs are reusable
+only with a successful admission receipt, a matching solution hash, current
+quality approval and the same model/solve/threshold settings, input-supported
+antenna set and fallback selection (path and bytes). Changed settings or
+legacy/unproven outputs are refused; use a fresh work directory or remove the
+cached selfcal MS and rerun. Reuse assumes the upstream MS has not been replaced
+or otherwise changed.
+
+WSClean launch failures (including missing/non-executable binaries) and failed
+model generation use the same audited fallback path and never invoke gaincal.
+Selfcal requires an updated final `MODEL_DATA`; the faster
+`-no-update-model-required` setting is retained only for imaging stages that do
+not consume that column. The configured `casarc` is passed to both DP3 and
+WSClean through `CASARCFILES`. When testing as another user, supply a casarc
+pointing to readable measures tables rather than a private production-user
+directory, and do not source an activation script that writes shared config.
+
+Run the isolated regression suite with `python -m pytest tests/`. HDF5 quality
+fixtures are real files; external DP3/WSClean commands are stubbed in unit
+integration tests, which are not on-sky/RFI-frame validation.
 
 Bright source removal is enabled by default. It runs a temporary full-sky WSClean pass with `-save-source-list`, writes the all-source list, keeps only components farther than `--bright-source-min-distance-deg` from the Sun, and subtracts those components from the post-selfcal averaged MS with DP3 `predict.operation=subtract`. The temporary full-sky FITS/model products are deleted by default; use `--keep-bright-source-images` if you need to inspect them.
 
